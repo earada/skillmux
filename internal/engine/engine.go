@@ -5,6 +5,7 @@
 package engine
 
 import (
+	"os"
 	"path/filepath"
 
 	"github.com/earada/skillmux/internal/apply"
@@ -144,6 +145,47 @@ func (e *Engine) cellStatus(sk AvailableSkill, target string) domain.Status {
 		return domain.StatusUpToDate
 	}
 	return domain.StatusUpdateAvailable
+}
+
+// Collision is an Install that would write over a folder already present at the
+// Target but not tracked in the Manifest — placed by hand or another tool. The
+// user must confirm before Skillmux overwrites it (ADR 0002).
+type Collision struct {
+	SkillName  string
+	SourceName string
+	TargetName string
+	Dir        string
+}
+
+// Collisions reports, for a Plan, the untracked folders its Install operations
+// would overwrite. Only Install ops can collide: reconcile emits Install solely
+// when nothing is tracked for that (Target, Skill), so a folder there is
+// untracked by definition.
+func (e *Engine) Collisions(plan reconcile.Plan) []Collision {
+	targets := e.targetPaths()
+	var out []Collision
+	for _, op := range plan.Operations {
+		if op.Kind != reconcile.Install {
+			continue
+		}
+		path, ok := targets[op.TargetName]
+		if !ok {
+			continue
+		}
+		if _, tracked := e.Manifest.Find(op.TargetName, op.SkillName); tracked {
+			continue
+		}
+		dir := filepath.Join(path, op.SkillName)
+		if _, err := os.Stat(dir); err == nil {
+			out = append(out, Collision{
+				SkillName:  op.SkillName,
+				SourceName: op.SourceName,
+				TargetName: op.TargetName,
+				Dir:        dir,
+			})
+		}
+	}
+	return out
 }
 
 // Plan computes the reconcile Plan for a desired selection against the current

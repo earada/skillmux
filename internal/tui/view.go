@@ -36,6 +36,8 @@ func (m Model) View() string {
 	switch m.mode {
 	case modePlan:
 		return m.viewPlan()
+	case modeOverwrite:
+		return m.viewOverwrite()
 	case modeResult:
 		return m.viewResult()
 	default:
@@ -164,6 +166,20 @@ func describeOp(op reconcile.Operation) string {
 		s += dimStyle.Render("  ["+op.Reason+"]")
 	}
 	return s
+}
+
+func (m Model) viewOverwrite() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Overwrite untracked folders?") + "\n\n")
+	b.WriteString(dimStyle.Render("These folders already exist but were not installed by skillmux:") + "\n\n")
+	for _, c := range m.collisions {
+		b.WriteString(errStyle.Render("  "+c.SkillName) +
+			dimStyle.Render(" ("+c.SourceName+") → "+c.TargetName) + "\n")
+		b.WriteString(dimStyle.Render("    "+c.Dir) + "\n")
+	}
+	b.WriteString("\n" + titleStyle.Render("Overwrite them? ") +
+		dimStyle.Render("[y] yes, adopt  [n] cancel"))
+	return b.String()
 }
 
 func (m Model) viewResult() string {

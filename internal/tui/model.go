@@ -19,6 +19,7 @@ type viewMode int
 const (
 	modeMatrix viewMode = iota
 	modePlan
+	modeOverwrite
 	modeResult
 )
 
@@ -41,6 +42,7 @@ type Model struct {
 	applying   bool
 	mode       viewMode
 	plan       reconcile.Plan
+	collisions []engine.Collision
 	report     apply.Report
 	applyErr   error
 
@@ -74,11 +76,22 @@ func refreshCmd(e *engine.Engine) tea.Cmd {
 	return func() tea.Msg { return refreshDoneMsg{cat: e.Refresh()} }
 }
 
-func applyCmd(e *engine.Engine, desired []reconcile.Cell, cat engine.Catalog) tea.Cmd {
+func applyCmd(e *engine.Engine, desired []reconcile.Cell, cat engine.Catalog, opts apply.Options) tea.Cmd {
 	return func() tea.Msg {
-		rep, err := e.Apply(desired, cat, apply.Options{})
+		rep, err := e.Apply(desired, cat, opts)
 		return applyDoneMsg{rep: rep, err: err}
 	}
+}
+
+// approveOverwrites builds a ConfirmOverwrite that approves exactly the
+// collisions the user just confirmed, keyed by (Target, Skill).
+func approveOverwrites(cols []engine.Collision) func(target, skill, dir string) bool {
+	type key struct{ target, skill string }
+	approved := map[key]bool{}
+	for _, c := range cols {
+		approved[key{c.TargetName, c.SkillName}] = true
+	}
+	return func(target, skill, _ string) bool { return approved[key{target, skill}] }
 }
 
 // Init kicks off the first background Refresh.
@@ -144,6 +157,8 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modePlan:
 		return m.onPlanKey(msg)
+	case modeOverwrite:
+		return m.onOverwriteKey(msg)
 	case modeResult:
 		return m.onResultKey(msg)
 	default:
@@ -193,10 +208,33 @@ func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeMatrix
 			return m, nil
 		}
+		// If any Install would overwrite an untracked folder, confirm first
+		// (ADR 0002). Otherwise apply straight away.
+		if cols := m.eng.Collisions(m.plan); len(cols) > 0 {
+			m.collisions = cols
+			m.mode = modeOverwrite
+			return m, nil
+		}
 		m.applying = true
 		m.mode = modeMatrix
-		return m, applyCmd(m.eng, selected(m.desired), m.cat)
+		return m, applyCmd(m.eng, selected(m.desired), m.cat, apply.Options{})
 	case "n", "esc", "q":
+		m.mode = modeMatrix
+	}
+	return m, nil
+}
+
+func (m Model) onOverwriteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y":
+		opts := apply.Options{ConfirmOverwrite: approveOverwrites(m.collisions)}
+		m.collisions = nil
+		m.applying = true
+		m.mode = modeMatrix
+		return m, applyCmd(m.eng, selected(m.desired), m.cat, opts)
+	case "n", "esc", "q":
+		// Cancel: nothing is touched. Back to the matrix.
+		m.collisions = nil
 		m.mode = modeMatrix
 	}
 	return m, nil
