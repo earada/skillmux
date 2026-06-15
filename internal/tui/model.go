@@ -21,6 +21,8 @@ const (
 	modePlan
 	modeOverwrite
 	modeResult
+	modeConfig
+	modeForm
 )
 
 type statusKey struct{ skill, source, target string }
@@ -45,6 +47,9 @@ type Model struct {
 	collisions []engine.Collision
 	report     apply.Report
 	applyErr   error
+
+	cfgCursor int         // cursor in the config-management list
+	form      *configForm // active add form, when mode == modeForm
 
 	width, height int
 }
@@ -161,6 +166,10 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.onOverwriteKey(msg)
 	case modeResult:
 		return m.onResultKey(msg)
+	case modeConfig:
+		return m.onConfigKey(msg)
+	case modeForm:
+		return m.onFormKey(msg)
 	default:
 		return m.onMatrixKey(msg)
 	}
@@ -193,6 +202,9 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.refreshing = true
 			return m, refreshCmd(m.eng)
 		}
+	case "c":
+		m.cfgCursor = 0
+		m.mode = modeConfig
 	case "p", "enter":
 		m.plan = m.eng.Plan(selected(m.desired), m.cat)
 		m.mode = modePlan

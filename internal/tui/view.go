@@ -40,6 +40,10 @@ func (m Model) View() string {
 		return m.viewOverwrite()
 	case modeResult:
 		return m.viewResult()
+	case modeConfig:
+		return m.viewConfig()
+	case modeForm:
+		return m.viewForm()
 	default:
 		return m.viewMatrix()
 	}
@@ -131,7 +135,7 @@ func (m Model) footer() string {
 		}
 	}
 	legend := dimStyle.Render("= up-to-date  ↑ update  · not-installed  ! conflict")
-	keys := dimStyle.Render("↑↓←→ move · space toggle · a all · n none · r refresh · p plan · q quit")
+	keys := dimStyle.Render("↑↓←→ move · space toggle · a all · n none · r refresh · p plan · c config · q quit")
 	b.WriteString(legend + "\n" + keys)
 	return b.String()
 }
@@ -200,6 +204,47 @@ func (m Model) viewResult() string {
 	}
 	b.WriteString(fmt.Sprintf("\n%d ok, %d failed\n", ok, failed))
 	b.WriteString("\n" + dimStyle.Render("press any key to continue · q to quit"))
+	return b.String()
+}
+
+func (m Model) viewConfig() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Configuration") + "\n\n")
+
+	entries := m.cfgEntries()
+	if len(entries) == 0 {
+		b.WriteString(dimStyle.Render("No targets or sources yet.") + "\n")
+	}
+	for i, e := range entries {
+		kind := "target"
+		if e.kind == entrySource {
+			kind = "source"
+		}
+		line := fmt.Sprintf("%-7s %-16s %s", kind, e.name, dimStyle.Render(e.detail))
+		if i == m.cfgCursor {
+			line = cursorStyle.Render(fmt.Sprintf("%-7s %-16s %s", kind, e.name, e.detail))
+		}
+		b.WriteString("  " + line + "\n")
+	}
+
+	b.WriteString("\n" + dimStyle.Render("t add target · s add source · d delete · ↑↓ move · esc back"))
+	return b.String()
+}
+
+func (m Model) viewForm() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(m.form.title) + "\n\n")
+	for i, in := range m.form.inputs {
+		marker := "  "
+		if i == m.form.focus {
+			marker = "> "
+		}
+		b.WriteString(marker + dimStyle.Render(pad(m.form.labels[i]+":", 22)) + in.View() + "\n")
+	}
+	if m.form.err != "" {
+		b.WriteString("\n" + errStyle.Render(m.form.err) + "\n")
+	}
+	b.WriteString("\n" + dimStyle.Render("tab next · enter save · esc cancel"))
 	return b.String()
 }
 

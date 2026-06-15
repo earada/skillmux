@@ -32,7 +32,7 @@ func envWithUntracked(t *testing.T) (Model, string /*targetPath*/) {
 		Targets: []config.TargetEntry{{Name: "cc", Path: targetPath}},
 		Sources: []config.SourceEntry{{Name: "local", Location: srcRoot}},
 	}
-	e := engine.New(cfg, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: t.TempDir()}, filepath.Join(t.TempDir(), "m.json"))
+	e := engine.New(cfg, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: t.TempDir()}, "", filepath.Join(t.TempDir(), "m.json"))
 	return New(e).onRefreshed(e.Refresh()), targetPath
 }
 

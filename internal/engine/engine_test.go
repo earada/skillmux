@@ -42,7 +42,8 @@ func newEnv(t *testing.T) (*Engine, string /*targetPath*/, string /*srcSkillDir*
 	}
 	man := &manifest.Manifest{}
 	f := &fetch.Fetcher{CacheDir: t.TempDir()}
-	return New(cfg, man, f, manifestPath), targetPath, skillDir, manifestPath
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	return New(cfg, man, f, configPath, manifestPath), targetPath, skillDir, manifestPath
 }
 
 func cell() []reconcile.Cell {
@@ -148,7 +149,7 @@ func TestRefreshCapturesSourceErrors(t *testing.T) {
 	cfg := &config.Config{
 		Sources: []config.SourceEntry{{Name: "broken", Location: filepath.Join(t.TempDir(), "does-not-exist")}},
 	}
-	e := New(cfg, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: t.TempDir()}, filepath.Join(t.TempDir(), "m.json"))
+	e := New(cfg, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: t.TempDir()}, "", filepath.Join(t.TempDir(), "m.json"))
 	cat := e.Refresh()
 	if _, ok := cat.SourceErrors["broken"]; !ok {
 		t.Errorf("expected a source error for 'broken', got %v", cat.SourceErrors)

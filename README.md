@@ -43,7 +43,9 @@ location = "~/dev/skills"
 
 Run `skillmux` to open the matrix. Keys: arrows move · `space` toggle a cell ·
 `a` all targets for a skill · `n` none · `r` refresh · `p` preview the plan ·
-`q` quit. From the plan, `y` applies. If applying would overwrite a folder
+`c` manage targets/sources · `q` quit. From the plan, `y` applies. The config
+screen (`c`) adds (`t`/`s`) and deletes (`d`) targets and sources and writes
+them back to `config.toml`; you can still edit the file by hand. If applying would overwrite a folder
 skillmux didn't install, it lists those folders and asks you to confirm
 (`y` adopts them, `n` cancels) before touching them — see ADR 0002.
 

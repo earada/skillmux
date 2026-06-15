@@ -45,7 +45,7 @@ func TestCollisionsIgnoresTrackedReinstall(t *testing.T) {
 	}
 	man := &manifest.Manifest{}
 	man.Put(installation("deploy", "cc", "local", "old"))
-	e := New(cfg, man, &fetch.Fetcher{CacheDir: t.TempDir()}, filepath.Join(t.TempDir(), "m.json"))
+	e := New(cfg, man, &fetch.Fetcher{CacheDir: t.TempDir()}, "", filepath.Join(t.TempDir(), "m.json"))
 
 	// A reinstall op (tracked) must never be treated as a collision.
 	plan := reconcile.Plan{Operations: []reconcile.Operation{

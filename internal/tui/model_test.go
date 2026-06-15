@@ -32,7 +32,7 @@ func testEngine(t *testing.T, targets ...string) *engine.Engine {
 		Sources: []config.SourceEntry{{Name: "local", Location: srcRoot}},
 	}
 	mp := filepath.Join(t.TempDir(), "m.json")
-	return engine.New(cfg, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: t.TempDir()}, mp)
+	return engine.New(cfg, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: t.TempDir()}, "", mp)
 }
 
 func runes(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }

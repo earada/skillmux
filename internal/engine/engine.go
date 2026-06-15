@@ -24,12 +24,14 @@ type Engine struct {
 	Config       *config.Config
 	Manifest     *manifest.Manifest
 	Fetcher      *fetch.Fetcher
+	configPath   string
 	manifestPath string
 }
 
 // New builds an Engine from already-loaded state. Used directly in tests.
-func New(cfg *config.Config, man *manifest.Manifest, fetcher *fetch.Fetcher, manifestPath string) *Engine {
-	return &Engine{Config: cfg, Manifest: man, Fetcher: fetcher, manifestPath: manifestPath}
+// configPath may be empty when the caller will not mutate the Config.
+func New(cfg *config.Config, man *manifest.Manifest, fetcher *fetch.Fetcher, configPath, manifestPath string) *Engine {
+	return &Engine{Config: cfg, Manifest: man, Fetcher: fetcher, configPath: configPath, manifestPath: manifestPath}
 }
 
 // Load wires an Engine from the on-disk Config and Manifest at their XDG paths.
@@ -54,7 +56,7 @@ func Load() (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return New(cfg, man, &fetch.Fetcher{CacheDir: cacheDir}, manifestPath), nil
+	return New(cfg, man, &fetch.Fetcher{CacheDir: cacheDir}, configPath, manifestPath), nil
 }
 
 // AvailableSkill is a Skill discovered in a Source, with its current
