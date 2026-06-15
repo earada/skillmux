@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "skillmux",
+  "project_id": "1206d187-dabe-4eb5-b062-c5ba0ca252cf"
+}
