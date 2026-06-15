@@ -1,0 +1,11 @@
+# Build output
+/skillmux
+/dist/
+*.out
+
+# Go
+*.test
+/coverage.*
+
+# Editor / OS
+.DS_Store
