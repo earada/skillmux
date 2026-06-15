@@ -18,7 +18,11 @@ See [`CONTEXT.md`](./CONTEXT.md) for the full glossary and
 ## Status
 
 Functional v1 end-to-end: scan sources, detect upstream drift, reconcile a
-desired selection, and apply it from a Bubble Tea matrix. Targets are
+desired selection, and apply it from a Bubble Tea matrix. The matrix renders
+instantly on startup from the last cached catalog while a fresh scan runs in
+the background. When the same skill name is offered by more than one source
+(marked ⚠), selection is exclusive per target — choosing one source deselects
+the others, so you pick the winner instead of hitting a conflict. Targets are
 configured by hand (no auto-detection yet).
 
 ## Configuration

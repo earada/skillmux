@@ -54,15 +54,22 @@ type Model struct {
 	width, height int
 }
 
-// New builds the initial Model for engine e.
+// New builds the initial Model for engine e. It renders immediately from the
+// last cached catalog (if any) so startup is instant; Init then refreshes in
+// the background to pick up upstream changes.
 func New(e *engine.Engine) Model {
-	return Model{
+	m := Model{
 		eng:          e,
 		targets:      e.Config.DomainTargets(),
 		status:       map[statusKey]domain.Status{},
 		desired:      map[reconcile.Cell]bool{},
 		sourceErrors: map[string]error{},
 	}
+	if cached := e.CachedCatalog(); len(cached.Skills) > 0 {
+		m = m.onRefreshed(cached)
+	}
+	m.refreshing = true // Init() kicks a background Refresh
+	return m
 }
 
 // Run starts the TUI program.
@@ -191,11 +198,11 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleCurrent()
 	case "a":
 		if sk, ok := m.curSkill(); ok {
-			setRow(m.desired, sk.Name, sk.Source, m.targets, true)
+			setRow(m.desired, sk.Name, sk.Source, m.targets, m.skills, true)
 		}
 	case "n":
 		if sk, ok := m.curSkill(); ok {
-			setRow(m.desired, sk.Name, sk.Source, m.targets, false)
+			setRow(m.desired, sk.Name, sk.Source, m.targets, m.skills, false)
 		}
 	case "r":
 		if !m.refreshing {
@@ -270,7 +277,11 @@ func (m *Model) toggleCurrent() {
 		return
 	}
 	c := reconcile.Cell{Skill: sk.Name, Source: sk.Source, Target: m.targets[m.col].Name}
-	m.desired[c] = !m.desired[c]
+	if m.desired[c] {
+		m.desired[c] = false
+	} else {
+		selectCell(m.desired, c, m.skills) // stay conflict-free
+	}
 }
 
 func (m *Model) curSkill() (engine.AvailableSkill, bool) {

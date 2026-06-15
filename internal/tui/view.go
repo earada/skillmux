@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/earada/skillmux/internal/domain"
+	"github.com/earada/skillmux/internal/engine"
 	"github.com/earada/skillmux/internal/reconcile"
 )
 
@@ -73,12 +74,26 @@ func (m Model) viewMatrix() string {
 		return b.String()
 	}
 
+	// A skill name offered by more than one Source is ambiguous: the user must
+	// pick which Source wins per Target (selection is exclusive). Flag it.
+	nameCount := map[string]int{}
+	for _, s := range m.skills {
+		nameCount[s.Name]++
+	}
+	plainLabel := func(s engine.AvailableSkill) string {
+		l := s.Name + " (" + s.Source + ")"
+		if nameCount[s.Name] > 1 {
+			l += " ⚠"
+		}
+		return l
+	}
+
 	// Column widths: each target column is wide enough for its name and the
 	// "[x ↑]" cell.
 	const cellW = 5
 	skillColW := 0
 	for _, s := range m.skills {
-		if w := len(s.Name) + len(s.Source) + 3; w > skillColW {
+		if w := lipgloss.Width(plainLabel(s)); w > skillColW {
 			skillColW = w
 		}
 	}
@@ -92,8 +107,11 @@ func (m Model) viewMatrix() string {
 
 	// Skill rows.
 	for ri, s := range m.skills {
-		label := fmt.Sprintf("%s %s", s.Name, dimStyle.Render("("+s.Source+")"))
-		b.WriteString(pad(label, skillColW+1+lipgloss.Width("("+s.Source+")")-len("("+s.Source+")")))
+		label := s.Name + " " + dimStyle.Render("("+s.Source+")")
+		if nameCount[s.Name] > 1 {
+			label += " " + statusStyles[domain.StatusConflict].Render("⚠")
+		}
+		b.WriteString(pad(label, skillColW+1))
 		for ci, t := range m.targets {
 			cell := m.renderCell(s.Name, s.Source, t.Name)
 			if ri == m.row && ci == m.col {

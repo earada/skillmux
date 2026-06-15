@@ -42,10 +42,29 @@ func selected(d map[reconcile.Cell]bool) []reconcile.Cell {
 	return out
 }
 
+// selectCell marks cell c as desired and, to keep the selection conflict-free,
+// clears any other Source offering the same Skill name into the same Target.
+// This is how a name Conflict is resolved in the declarative model: choosing
+// one Source's cell deselects the rival Sources rather than producing a Plan
+// that would fail at Apply.
+func selectCell(d map[reconcile.Cell]bool, c reconcile.Cell, skills []engine.AvailableSkill) {
+	for _, sk := range skills {
+		if sk.Name == c.Skill && sk.Source != c.Source {
+			d[reconcile.Cell{Skill: c.Skill, Source: sk.Source, Target: c.Target}] = false
+		}
+	}
+	d[c] = true
+}
+
 // setRow selects or clears every Target for one Skill row (the All / None
-// shortcuts).
-func setRow(d map[reconcile.Cell]bool, skill, source string, targets []domain.Target, on bool) {
+// shortcuts). When selecting, it stays conflict-free via selectCell.
+func setRow(d map[reconcile.Cell]bool, skill, source string, targets []domain.Target, skills []engine.AvailableSkill, on bool) {
 	for _, t := range targets {
-		d[reconcile.Cell{Skill: skill, Source: source, Target: t.Name}] = on
+		c := reconcile.Cell{Skill: skill, Source: source, Target: t.Name}
+		if on {
+			selectCell(d, c, skills)
+		} else {
+			d[c] = false
+		}
 	}
 }

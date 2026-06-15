@@ -116,6 +116,7 @@ func (e *Engine) Refresh() Catalog {
 			})
 		}
 	}
+	e.saveCatalog(cat)
 	return cat
 }
 

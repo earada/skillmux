@@ -43,15 +43,45 @@ func TestSelectedReturnsSortedTrueCells(t *testing.T) {
 
 func TestSetRowAllAndNone(t *testing.T) {
 	targets := []domain.Target{{Name: "t1"}, {Name: "t2"}}
+	skills := []engine.AvailableSkill{{Name: "deploy", Source: "s"}}
 	d := map[reconcile.Cell]bool{}
-	setRow(d, "deploy", "s", targets, true)
+	setRow(d, "deploy", "s", targets, skills, true)
 	if !d[reconcile.Cell{Skill: "deploy", Source: "s", Target: "t1"}] ||
 		!d[reconcile.Cell{Skill: "deploy", Source: "s", Target: "t2"}] {
 		t.Error("setRow(true) should select all targets for the row")
 	}
-	setRow(d, "deploy", "s", targets, false)
+	setRow(d, "deploy", "s", targets, skills, false)
 	if d[reconcile.Cell{Skill: "deploy", Source: "s", Target: "t1"}] ||
 		d[reconcile.Cell{Skill: "deploy", Source: "s", Target: "t2"}] {
 		t.Error("setRow(false) should clear all targets for the row")
+	}
+}
+
+func TestSelectCellIsExclusivePerNameAndTarget(t *testing.T) {
+	skills := []engine.AvailableSkill{
+		{Name: "deploy", Source: "a"},
+		{Name: "deploy", Source: "b"},
+	}
+	d := map[reconcile.Cell]bool{}
+	selectCell(d, reconcile.Cell{Skill: "deploy", Source: "a", Target: "t1"}, skills)
+	selectCell(d, reconcile.Cell{Skill: "deploy", Source: "b", Target: "t1"}, skills)
+
+	if d[reconcile.Cell{Skill: "deploy", Source: "a", Target: "t1"}] {
+		t.Error("selecting source b should have cleared source a for the same target")
+	}
+	if !d[reconcile.Cell{Skill: "deploy", Source: "b", Target: "t1"}] {
+		t.Error("source b should be selected")
+	}
+}
+
+func TestSelectCellDoesNotAffectOtherTargets(t *testing.T) {
+	skills := []engine.AvailableSkill{{Name: "deploy", Source: "a"}, {Name: "deploy", Source: "b"}}
+	d := map[reconcile.Cell]bool{}
+	selectCell(d, reconcile.Cell{Skill: "deploy", Source: "a", Target: "t1"}, skills)
+	selectCell(d, reconcile.Cell{Skill: "deploy", Source: "b", Target: "t2"}, skills)
+	// Different targets: both stay selected.
+	if !d[reconcile.Cell{Skill: "deploy", Source: "a", Target: "t1"}] ||
+		!d[reconcile.Cell{Skill: "deploy", Source: "b", Target: "t2"}] {
+		t.Error("selections in different targets must not interfere")
 	}
 }
