@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/earada/skillmux/internal/domain"
+	"github.com/earada/skillmux/internal/paths"
 )
 
 // Fetcher resolves Sources, caching downloaded GitHub tarballs under CacheDir.
@@ -43,7 +44,7 @@ func (f *Fetcher) Fetch(src domain.Source) (string, error) {
 }
 
 func (f *Fetcher) fetchLocal(src domain.Source) (string, error) {
-	base := expandHome(src.Location)
+	base := paths.ExpandHome(src.Location)
 	dir, err := applySubpath(base, src.Subpath)
 	if err != nil {
 		return "", err
@@ -200,15 +201,6 @@ func applySubpath(base, subpath string) (string, error) {
 	}
 	clean := filepath.Clean("/" + filepath.ToSlash(subpath)) // anchor to strip ".."
 	return filepath.Join(base, clean), nil
-}
-
-func expandHome(p string) string {
-	if p == "~" || strings.HasPrefix(p, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
-		}
-	}
-	return p
 }
 
 func sanitize(name string) string {

@@ -8,9 +8,24 @@ package paths
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const appName = "skillmux"
+
+// ExpandHome resolves a leading "~" in p to the user's home directory. A path
+// without a leading "~", or one that cannot be resolved, is returned unchanged.
+// Used for user-supplied paths (Source locations, Target paths) so a config
+// like "~/.claude/skills" lands in the home directory rather than a literal
+// "~" folder under the working directory.
+func ExpandHome(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
+		}
+	}
+	return p
+}
 
 // ConfigFile is the path to the user-owned Config (TOML).
 func ConfigFile() (string, error) {

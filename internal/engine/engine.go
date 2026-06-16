@@ -211,7 +211,9 @@ func (e *Engine) Apply(desired []reconcile.Cell, cat Catalog, opts apply.Options
 func (e *Engine) targetPaths() map[string]string {
 	m := map[string]string{}
 	for _, t := range e.Config.DomainTargets() {
-		m[t.Name] = t.Path
+		// Resolve a leading "~" so a Target path like "~/.claude/skills" lands
+		// in the home directory rather than a literal "~" folder under the cwd.
+		m[t.Name] = paths.ExpandHome(t.Path)
 	}
 	return m
 }
