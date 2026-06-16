@@ -29,6 +29,9 @@ const (
 
 type statusKey struct{ skill, source, target string }
 
+// skillRef identifies a matrix row: a Skill name within a specific Source.
+type skillRef struct{ name, source string }
+
 // Model is the Bubble Tea model for Skillmux.
 type Model struct {
 	eng     *engine.Engine
@@ -36,6 +39,7 @@ type Model struct {
 
 	skills       []engine.AvailableSkill
 	status       map[statusKey]domain.Status
+	installed    map[skillRef]bool // skills present in at least one Target
 	desired      map[reconcile.Cell]bool
 	sourceErrors map[string]error
 	cat          engine.Catalog
@@ -52,6 +56,7 @@ type Model struct {
 	applyErr   error
 
 	cfgCursor int         // cursor in the config-management list
+	cfgMsg    string      // transient status line for the config view (e.g. cache cleared)
 	form      *configForm // active add form, when mode == modeForm
 
 	search    textinput.Model // the "/" search line
@@ -152,20 +157,32 @@ func (m Model) onRefreshed(cat engine.Catalog) Model {
 	m.cat = cat
 	m.sourceErrors = cat.SourceErrors
 
+	// Compute status first: the row order depends on which skills are installed.
+	cells := m.eng.Status(cat)
+	m.status = map[statusKey]domain.Status{}
+	m.installed = map[skillRef]bool{} // present in at least one Target
+	for _, c := range cells {
+		m.status[statusKey{c.SkillName, c.SourceName, c.TargetName}] = c.Status
+		if c.Status == domain.StatusUpToDate || c.Status == domain.StatusUpdateAvailable {
+			m.installed[skillRef{c.SkillName, c.SourceName}] = true
+		}
+	}
+
 	skills := append([]engine.AvailableSkill(nil), cat.Skills...)
 	sort.Slice(skills, func(i, j int) bool {
-		if skills[i].Name != skills[j].Name {
-			return skills[i].Name < skills[j].Name
+		// Group into sections — installed, then not-installed, then deprecated
+		// — so the matrix can rule a line between each. Within a section, keep
+		// each Source's Skills together, alphabetical by name.
+		if si, sj := m.section(skills[i]), m.section(skills[j]); si != sj {
+			return si < sj
 		}
-		return skills[i].Source < skills[j].Source
+		if skills[i].Source != skills[j].Source {
+			return skills[i].Source < skills[j].Source
+		}
+		return skills[i].Name < skills[j].Name
 	})
 	m.skills = skills
 
-	cells := m.eng.Status(cat)
-	m.status = map[statusKey]domain.Status{}
-	for _, c := range cells {
-		m.status[statusKey{c.SkillName, c.SourceName, c.TargetName}] = c.Status
-	}
 	if !m.loaded {
 		m.desired = initialDesired(cells)
 		m.loaded = true
@@ -244,6 +261,7 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "c":
 		m.cfgCursor = 0
+		m.cfgMsg = ""
 		m.mode = modeConfig
 	case "p", "enter":
 		m.plan = m.eng.Plan(selected(m.desired), m.cat)
@@ -359,8 +377,8 @@ func (m *Model) curSkill() (engine.AvailableSkill, bool) {
 
 // rows is the list of skills currently shown in the matrix: all of them, or
 // just those matching the active filter (case-insensitive substring over the
-// skill name and its source). The cursor (m.row) and scroll index always refer
-// to this filtered list, never to m.skills directly.
+// skill name, its group, and its source). The cursor (m.row) and scroll index
+// always refer to this filtered list, never to m.skills directly.
 func (m Model) rows() []engine.AvailableSkill {
 	if m.filter == "" {
 		return m.skills
@@ -368,11 +386,45 @@ func (m Model) rows() []engine.AvailableSkill {
 	q := strings.ToLower(m.filter)
 	out := make([]engine.AvailableSkill, 0, len(m.skills))
 	for _, s := range m.skills {
-		if strings.Contains(strings.ToLower(s.Name+" "+s.Source), q) {
+		if strings.Contains(strings.ToLower(s.Group+" "+s.Name+" "+s.Source), q) {
 			out = append(out, s)
 		}
 	}
 	return out
+}
+
+// Matrix sections, in display order. A ruled line separates each from the next.
+const (
+	secInstalled    = 0 // present in at least one Target
+	secNotInstalled = 1
+	secDeprecated   = 2 // author-retired; sinks below everything
+)
+
+// section assigns a skill to its matrix section. Deprecated wins regardless of
+// install state, so retired skills always gather at the bottom.
+func (m Model) section(s engine.AvailableSkill) int {
+	switch {
+	case isDeprecated(s):
+		return secDeprecated
+	case m.installed[skillRef{s.Name, s.Source}]:
+		return secInstalled
+	default:
+		return secNotInstalled
+	}
+}
+
+// sectionBoundaries counts the section transitions among the currently shown
+// rows — i.e. how many separator lines the matrix may draw. viewMatrix reserves
+// this many lines so a separator never pushes a row off-screen.
+func (m Model) sectionBoundaries() int {
+	rows := m.rows()
+	n := 0
+	for i := 1; i < len(rows); i++ {
+		if m.section(rows[i]) != m.section(rows[i-1]) {
+			n++
+		}
+	}
+	return n
 }
 
 func (m *Model) clampCursor() {

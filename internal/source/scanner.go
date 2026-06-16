@@ -50,10 +50,13 @@ func Scan(root, sourceName string) ([]domain.Skill, error) {
 			return err
 		}
 		skills = append(skills, domain.Skill{
-			Name:        fm.Name,
-			Description: fm.Description,
-			SourceName:  sourceName,
-			RelPath:     rel,
+			Name:              fm.Name,
+			Description:       fm.Description,
+			SourceName:        sourceName,
+			RelPath:           rel,
+			Group:             groupOf(rel),
+			Deprecated:        fm.Deprecated.deprecated,
+			DeprecationReason: fm.Deprecated.reason,
 		})
 		return fs.SkipDir // a Skill is atomic; do not descend into it
 	})
@@ -64,8 +67,44 @@ func Scan(root, sourceName string) ([]domain.Skill, error) {
 }
 
 type frontmatter struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
+	Name        string      `yaml:"name"`
+	Description string      `yaml:"description"`
+	Deprecated  deprecation `yaml:"deprecated"`
+}
+
+// deprecation captures the optional `deprecated` frontmatter field, which an
+// author may write either as a bool (`deprecated: true`) or as a string giving
+// a migration note (`deprecated: "use new-skill instead"`). Both forms mark the
+// Skill deprecated; the string form also carries a reason.
+type deprecation struct {
+	deprecated bool
+	reason     string
+}
+
+func (d *deprecation) UnmarshalYAML(value *yaml.Node) error {
+	var b bool
+	if err := value.Decode(&b); err == nil {
+		d.deprecated = b
+		return nil
+	}
+	var s string
+	if err := value.Decode(&s); err == nil {
+		d.reason = strings.TrimSpace(s)
+		d.deprecated = d.reason != ""
+		return nil
+	}
+	return fmt.Errorf("invalid 'deprecated' value: want a bool or a string, got %q", value.Value)
+}
+
+// groupOf derives a Skill's Group from its path relative to the Source root: the
+// parent directories, slash-joined for stable cross-platform display. A Skill at
+// the root ("." or a single segment) has no group.
+func groupOf(rel string) string {
+	dir := filepath.Dir(rel)
+	if dir == "." || dir == string(filepath.Separator) {
+		return ""
+	}
+	return filepath.ToSlash(dir)
 }
 
 // parseFrontmatter extracts the leading YAML frontmatter block (delimited by

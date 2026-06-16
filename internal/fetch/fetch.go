@@ -87,6 +87,26 @@ func (f *Fetcher) fetchGitHub(src domain.Source) (string, error) {
 	return applySubpath(dest, src.Subpath)
 }
 
+// CacheDirFor returns the cache directory a Source's contents are extracted
+// into, or "" for Sources that are not cached (local Sources resolve in place).
+func (f *Fetcher) CacheDirFor(src domain.Source) string {
+	if src.Kind != domain.SourceGitHub {
+		return ""
+	}
+	return filepath.Join(f.CacheDir, "github", sanitize(src.Name))
+}
+
+// ClearCache removes a Source's cached copy from disk. It reports whether the
+// Source is cacheable: false (with no error) for local Sources, which have no
+// cache. The next Fetch re-downloads the Source.
+func (f *Fetcher) ClearCache(src domain.Source) (bool, error) {
+	dir := f.CacheDirFor(src)
+	if dir == "" {
+		return false, nil
+	}
+	return true, os.RemoveAll(dir)
+}
+
 // TarballURL builds the codeload tarball URL for a GitHub repo URL and ref.
 // branch may be a branch, tag, or commit; empty means the default branch (HEAD).
 func TarballURL(repoURL, branch string) (string, error) {

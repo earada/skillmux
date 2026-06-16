@@ -23,16 +23,35 @@ type cfgEntry struct {
 	detail string
 }
 
-// cfgEntries flattens the configured Targets then Sources for display.
+// cfgEntries flattens the configured Sources then Targets for display, grouped
+// the way the matrix groups skills: Sources on top, Targets below a divider.
 func (m Model) cfgEntries() []cfgEntry {
 	var out []cfgEntry
-	for _, t := range m.eng.Config.Targets {
-		out = append(out, cfgEntry{entryTarget, t.Name, t.Path})
-	}
 	for _, s := range m.eng.Config.Sources {
 		out = append(out, cfgEntry{entrySource, s.Name, s.Location})
 	}
+	for _, t := range m.eng.Config.Targets {
+		out = append(out, cfgEntry{entryTarget, t.Name, t.Path})
+	}
 	return out
+}
+
+func findTarget(ts []config.TargetEntry, name string) (config.TargetEntry, bool) {
+	for _, t := range ts {
+		if t.Name == name {
+			return t, true
+		}
+	}
+	return config.TargetEntry{}, false
+}
+
+func findSource(ss []config.SourceEntry, name string) (config.SourceEntry, bool) {
+	for _, s := range ss {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return config.SourceEntry{}, false
 }
 
 func (m Model) onConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -52,6 +71,20 @@ func (m Model) onConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.form = newSourceForm()
 		m.mode = modeForm
 		return m, nil
+	case "e":
+		if m.cfgCursor >= 0 && m.cfgCursor < len(entries) {
+			e := entries[m.cfgCursor]
+			if e.kind == entryTarget {
+				if t, ok := findTarget(m.eng.Config.Targets, e.name); ok {
+					m.form = editTargetForm(t)
+					m.mode = modeForm
+				}
+			} else if s, ok := findSource(m.eng.Config.Sources, e.name); ok {
+				m.form = editSourceForm(s)
+				m.mode = modeForm
+			}
+		}
+		return m, nil
 	case "d", "x":
 		if m.cfgCursor >= 0 && m.cfgCursor < len(entries) {
 			e := entries[m.cfgCursor]
@@ -61,9 +94,30 @@ func (m Model) onConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				_ = m.eng.RemoveSource(e.name)
 			}
 		}
+	case "C":
+		if m.cfgCursor >= 0 && m.cfgCursor < len(entries) {
+			e := entries[m.cfgCursor]
+			if e.kind == entrySource {
+				cached, err := m.eng.ClearSourceCache(e.name)
+				m.cfgMsg = clearCacheResult(cached, err, e.name)
+			}
+		}
 	}
 	m.cfgCursor = clamp(m.cfgCursor, 0, len(m.cfgEntries())-1)
 	return m, nil
+}
+
+// clearCacheResult turns the outcome of Engine.ClearSourceCache into the status
+// line shown in the config view.
+func clearCacheResult(cached bool, err error, name string) string {
+	switch {
+	case err != nil:
+		return "cache: " + err.Error()
+	case cached:
+		return "Cleared cache for " + name + " — refresh to re-download."
+	default:
+		return name + " has no cache (local source)."
+	}
 }
 
 // leaveConfig returns to the matrix, picking up any Target changes and
@@ -108,9 +162,16 @@ func (m *Model) submitForm() error {
 	v := m.form.values()
 	switch m.form.kind {
 	case formTarget:
+		if m.form.editing {
+			return m.eng.UpdateTarget(m.form.origName, v[0], v[1])
+		}
 		return m.eng.AddTarget(v[0], v[1])
 	default:
-		return m.eng.AddSource(config.SourceEntry{Name: v[0], Location: v[1], Branch: v[2], Subpath: v[3]})
+		s := config.SourceEntry{Name: v[0], Location: v[1], Branch: v[2], Subpath: v[3]}
+		if m.form.editing {
+			return m.eng.UpdateSource(m.form.origName, s)
+		}
+		return m.eng.AddSource(s)
 	}
 }
 
@@ -124,12 +185,14 @@ const (
 )
 
 type configForm struct {
-	kind   formKind
-	title  string
-	labels []string
-	inputs []textinput.Model
-	focus  int
-	err    string
+	kind     formKind
+	title    string
+	labels   []string
+	inputs   []textinput.Model
+	focus    int
+	err      string
+	editing  bool   // true when editing an existing entry rather than adding
+	origName string // the entry's name before editing, for the in-place update
 }
 
 func newTargetForm() *configForm {
@@ -142,6 +205,22 @@ func newSourceForm() *configForm {
 	return newForm(formSource, "Add source",
 		[]string{"name", "location", "branch (optional)", "subpath (optional)"},
 		[]string{"my-skills", "https://github.com/owner/repo or ~/dev/skills", "main", "skills"})
+}
+
+// editTargetForm / editSourceForm build a form pre-filled with an existing
+// entry's values; submitForm then updates it in place rather than adding.
+func editTargetForm(t config.TargetEntry) *configForm {
+	f := newTargetForm()
+	f.title, f.editing, f.origName = "Edit target", true, t.Name
+	f.setValues(t.Name, t.Path)
+	return f
+}
+
+func editSourceForm(s config.SourceEntry) *configForm {
+	f := newSourceForm()
+	f.title, f.editing, f.origName = "Edit source", true, s.Name
+	f.setValues(s.Name, s.Location, s.Branch, s.Subpath)
+	return f
 }
 
 func newForm(kind formKind, title string, labels, placeholders []string) *configForm {
@@ -164,6 +243,15 @@ func (f *configForm) setFocus(i int) {
 	f.inputs[f.focus].Blur()
 	f.focus = i
 	f.inputs[f.focus].Focus()
+}
+
+// setValues pre-fills the inputs (used when editing an existing entry).
+func (f *configForm) setValues(vals ...string) {
+	for i, v := range vals {
+		if i < len(f.inputs) {
+			f.inputs[i].SetValue(v)
+		}
+	}
 }
 
 func (f *configForm) values() []string {

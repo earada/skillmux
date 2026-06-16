@@ -12,6 +12,14 @@ _Avoid_: package, plugin, command
 An origin that holds one or more Skills — either a public GitHub URL or a local folder. A Source may contain N Skills (each subfolder with a `SKILL.md` is one Skill); the user picks which to install.
 _Avoid_: repo (when ambiguous), registry
 
+**Group**:
+The folder hierarchy a Skill sits under within its Source, derived from where its `SKILL.md` lives (the parent directories, slash-joined). Purely organisational — it is not part of the Skill's identity and does not affect the install folder — but Skillmux surfaces it as a dimmed hint trailing the Skill name in the matrix (`strict-mode  typescript`, name first so the eye lands on identity) and lets the user filter by it. A Skill at the Source root has no Group.
+_Avoid_: category, namespace, package
+
+**Deprecated**:
+A Skill the author has retired. Skillmux infers this from either signal: the `SKILL.md` frontmatter (`deprecated: true` or `deprecated: "<migration note>"`), or a `deprecated` segment in the Skill's folder path (the convention some Sources use to bucket retired Skills). It still lists the Skill (so existing Installations remain visible) but marks it with a `⊘` glyph and strike-through, gathers all such Skills into the bottom section of the matrix (below a full-width rule), reddens the word "deprecated" in the path, and shows the migration note when the cursor rests on it. Distinct from Update available, which is about drift, not author intent.
+_Avoid_: archived, obsolete, retired (in field name)
+
 **Target**:
 An AI coding tool installed on the machine that consumes Skills (e.g. Claude Code, Cursor, Codex). Each Target is a configurable `{ name, path }` where `path` is the directory Skillmux installs Skills into. In v1 all Targets share a homogeneous skill format (a folder containing `SKILL.md`); installing = copying the Skill folder into the Target's path.
 _Avoid_: agent (collides with Claude Code "subagent"), host, destination

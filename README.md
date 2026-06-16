@@ -7,6 +7,10 @@ Skill's upstream **Source** has changed since you last installed it.
 - **Skill** — a self-contained directory identified by its `SKILL.md`.
 - **Source** — a public GitHub repo or a local folder holding one or more Skills.
 - **Target** — an AI tool that consumes Skills, configured as `{ name, path }`.
+- **Group** — the folder hierarchy a Skill sits under within its Source, shown
+  as a dimmed hint after the name.
+- **Deprecated** — a retired Skill, flagged by its `SKILL.md` frontmatter or by a
+  `deprecated/` folder in its path; gathered at the bottom of the matrix.
 
 You edit a desired Skills × Targets selection in the TUI; **Apply** reconciles
 reality to match it (install / uninstall / reinstall) after showing a confirmable
@@ -20,10 +24,22 @@ See [`CONTEXT.md`](./CONTEXT.md) for the full glossary and
 Functional v1 end-to-end: scan sources, detect upstream drift, reconcile a
 desired selection, and apply it from a Bubble Tea matrix. The matrix renders
 instantly on startup from the last cached catalog while a fresh scan runs in
-the background. When the same skill name is offered by more than one source
-(marked ⚠), selection is exclusive per target — choosing one source deselects
-the others, so you pick the winner instead of hitting a conflict. Targets are
-configured by hand (no auto-detection yet).
+the background.
+
+Rows are organised to surface what matters: skills split into three sections —
+**installed** (in at least one target), **not installed**, then **deprecated** —
+separated by full-width rules, and within each section grouped by source then
+sorted by name so a source's skills stay together. Each row leads with the skill
+name (accent-coloured, or red when the same name comes from more than one
+source) followed by its folder **group** as a dimmed hint; a skill is treated as
+**deprecated** when its `SKILL.md` says so or its path contains a `deprecated/`
+folder, shown struck-through with a `⊘` glyph (and the word "deprecated" reddened
+in the path).
+
+When the same skill name is offered by more than one source, selection is
+exclusive per target — choosing one source deselects the others, so you pick the
+winner instead of hitting a conflict. Targets are configured by hand (no
+auto-detection yet).
 
 ## Configuration
 
@@ -46,11 +62,15 @@ location = "~/dev/skills"
 ```
 
 Run `skillmux` to open the matrix. Keys: arrows move · `space` toggle a cell ·
-`a` all targets for a skill · `n` none · `/` filter skills (vim-style, `esc`
-clears) · `r` refresh · `p` preview the plan · `c` manage targets/sources ·
+`a` all targets for a skill · `n` none · `/` filter skills by name, group or
+source (vim-style, `esc` clears) · `r` refresh · `p` preview the plan · `c`
+manage targets/sources ·
 `q` quit. From the plan, `y` applies. The config
-screen (`c`) adds (`t`/`s`) and deletes (`d`) targets and sources and writes
-them back to `config.toml`; you can still edit the file by hand. If applying would overwrite a folder
+screen (`c`) lists sources then targets (split by a rule) and adds (`t`/`s`),
+edits (`e`) and deletes (`d`) them, writing changes back to `config.toml`; you
+can still edit the file by hand. `C` clears the download cache of the source
+under the cursor (a no-op for local sources), so the next refresh re-downloads
+it from scratch. If applying would overwrite a folder
 skillmux didn't install, it lists those folders and asks you to confirm
 (`y` adopts them, `n` cancels) before touching them — see ADR 0002.
 
@@ -62,7 +82,7 @@ internal/domain     core types (Skill, Source, Target, Installation, Status)
 internal/config     user-owned Config (TOML, XDG ~/.config/skillmux)
 internal/manifest   Skillmux-owned Manifest (JSON, XDG ~/.local/state/skillmux)
 internal/paths      XDG path resolution
-internal/source     recursive Skill discovery (SKILL.md frontmatter)
+internal/source     recursive Skill discovery (SKILL.md frontmatter: name, description, deprecated; group from path)
 internal/fingerprint deterministic content hash of a Skill folder
 internal/fetch      resolve a Source (local folder / GitHub tarball + cache)
 internal/reconcile  desired selection -> Plan (pure)

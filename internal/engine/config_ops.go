@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/earada/skillmux/internal/config"
 )
@@ -34,6 +35,15 @@ func (e *Engine) RemoveTarget(name string) error {
 		func(old config.Config) { e.Config.Targets = old.Targets })
 }
 
+// UpdateTarget replaces the Target named oldName in place (preserving its
+// position) and persists the Config. Editing only the path keeps the same name,
+// which config.Save accepts since the entry is replaced, not duplicated.
+func (e *Engine) UpdateTarget(oldName, name, path string) error {
+	return e.mutate(func() {
+		e.Config.Targets = replaceTarget(e.Config.Targets, oldName, config.TargetEntry{Name: name, Path: path})
+	}, func(old config.Config) { e.Config.Targets = old.Targets })
+}
+
 // AddSource appends a Source and persists the Config.
 func (e *Engine) AddSource(s config.SourceEntry) error {
 	return e.mutate(func() { e.Config.Sources = append(e.Config.Sources, s) },
@@ -43,6 +53,25 @@ func (e *Engine) AddSource(s config.SourceEntry) error {
 // RemoveSource drops the named Source and persists the Config.
 func (e *Engine) RemoveSource(name string) error {
 	return e.mutate(func() { e.Config.Sources = withoutSource(e.Config.Sources, name) },
+		func(old config.Config) { e.Config.Sources = old.Sources })
+}
+
+// ClearSourceCache removes the named Source's on-disk cache so the next Refresh
+// re-downloads it. It reports whether the Source was cacheable: false (no error)
+// for local Sources, which have no cache. Unlike the other ops it touches no
+// Config, so nothing is persisted.
+func (e *Engine) ClearSourceCache(name string) (bool, error) {
+	for _, src := range e.Config.DomainSources() {
+		if src.Name == name {
+			return e.Fetcher.ClearCache(src)
+		}
+	}
+	return false, fmt.Errorf("source %q not found", name)
+}
+
+// UpdateSource replaces the Source named oldName in place and persists.
+func (e *Engine) UpdateSource(oldName string, s config.SourceEntry) error {
+	return e.mutate(func() { e.Config.Sources = replaceSource(e.Config.Sources, oldName, s) },
 		func(old config.Config) { e.Config.Sources = old.Sources })
 }
 
@@ -68,6 +97,28 @@ func withoutTarget(ts []config.TargetEntry, name string) []config.TargetEntry {
 	for _, t := range ts {
 		if t.Name != name {
 			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func replaceTarget(ts []config.TargetEntry, oldName string, repl config.TargetEntry) []config.TargetEntry {
+	out := append([]config.TargetEntry(nil), ts...)
+	for i := range out {
+		if out[i].Name == oldName {
+			out[i] = repl
+			break
+		}
+	}
+	return out
+}
+
+func replaceSource(ss []config.SourceEntry, oldName string, repl config.SourceEntry) []config.SourceEntry {
+	out := append([]config.SourceEntry(nil), ss...)
+	for i := range out {
+		if out[i].Name == oldName {
+			out[i] = repl
+			break
 		}
 	}
 	return out

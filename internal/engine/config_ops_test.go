@@ -50,6 +50,45 @@ func TestAddTargetRejectsDuplicateAndDoesNotPersist(t *testing.T) {
 	}
 }
 
+func TestUpdateTargetReplacesInPlaceAndPersists(t *testing.T) {
+	e, configPath := cfgEngine(t)
+	e.AddTarget("a", "/a")
+	e.AddTarget("b", "/b")
+	// Edit "a" (rename + new path) — it must keep its leading position.
+	if err := e.UpdateTarget("a", "alpha", "/alpha"); err != nil {
+		t.Fatalf("UpdateTarget: %v", err)
+	}
+	reloaded, _ := config.Load(configPath)
+	if len(reloaded.Targets) != 2 ||
+		reloaded.Targets[0].Name != "alpha" || reloaded.Targets[0].Path != "/alpha" ||
+		reloaded.Targets[1].Name != "b" {
+		t.Errorf("update not persisted in place: %+v", reloaded.Targets)
+	}
+}
+
+func TestUpdateTargetPathOnlyKeepsSameName(t *testing.T) {
+	e, _ := cfgEngine(t)
+	e.AddTarget("cc", "/old")
+	if err := e.UpdateTarget("cc", "cc", "/new"); err != nil {
+		t.Fatalf("editing the path with an unchanged name must not look like a duplicate: %v", err)
+	}
+	if e.Config.Targets[0].Path != "/new" {
+		t.Errorf("path not updated: %+v", e.Config.Targets)
+	}
+}
+
+func TestUpdateSourceReplacesInPlace(t *testing.T) {
+	e, configPath := cfgEngine(t)
+	e.AddSource(config.SourceEntry{Name: "s", Location: "/old"})
+	if err := e.UpdateSource("s", config.SourceEntry{Name: "s", Location: "/new", Branch: "main"}); err != nil {
+		t.Fatalf("UpdateSource: %v", err)
+	}
+	reloaded, _ := config.Load(configPath)
+	if len(reloaded.Sources) != 1 || reloaded.Sources[0].Location != "/new" || reloaded.Sources[0].Branch != "main" {
+		t.Errorf("source update not persisted: %+v", reloaded.Sources)
+	}
+}
+
 func TestRemoveTargetPersists(t *testing.T) {
 	e, configPath := cfgEngine(t)
 	e.AddTarget("a", "/a")

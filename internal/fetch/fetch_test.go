@@ -165,3 +165,41 @@ func TestFetchLocalErrorsWhenMissing(t *testing.T) {
 		t.Error("expected error for missing local source")
 	}
 }
+
+func TestClearCacheRemovesGitHubSourceDir(t *testing.T) {
+	tarball := makeTarGz(t, "repo-main", map[string]string{"SKILL.md": "x"})
+	f := &Fetcher{
+		Client:   &http.Client{Transport: stubTransport{status: 200, body: tarball}},
+		CacheDir: t.TempDir(),
+	}
+	src := domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: "https://github.com/owner/repo"}
+	dir, err := f.Fetch(src)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("expected cached dir to exist: %v", err)
+	}
+
+	cached, err := f.ClearCache(src)
+	if err != nil {
+		t.Fatalf("ClearCache: %v", err)
+	}
+	if !cached {
+		t.Error("ClearCache(github) = false, want true")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("expected cache dir removed, stat err = %v", err)
+	}
+}
+
+func TestClearCacheIsNoOpForLocalSource(t *testing.T) {
+	f := &Fetcher{CacheDir: t.TempDir()}
+	cached, err := f.ClearCache(domain.Source{Name: "local", Kind: domain.SourceLocal, Location: t.TempDir()})
+	if err != nil {
+		t.Fatalf("ClearCache: %v", err)
+	}
+	if cached {
+		t.Error("ClearCache(local) = true, want false (not cached)")
+	}
+}

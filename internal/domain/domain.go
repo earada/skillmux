@@ -51,6 +51,15 @@ type Skill struct {
 	SourceName string
 	// RelPath is the Skill directory's path relative to its Source root.
 	RelPath string
+	// Group is the folder hierarchy the Skill sits under within its Source,
+	// derived from RelPath (the parent directories, slash-joined). Empty for a
+	// Skill at the Source root. Purely organisational — not part of identity.
+	Group string
+	// Deprecated reports whether the SKILL.md frontmatter marks this Skill as
+	// deprecated. DeprecationReason carries the optional human-readable note
+	// (e.g. "use new-skill instead") when the field was given as a string.
+	Deprecated        bool
+	DeprecationReason string
 }
 
 // Installation records the fact of a Skill being present in a Target, along

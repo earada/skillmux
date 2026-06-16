@@ -108,6 +108,80 @@ func TestScanRejectsMissingFrontmatter(t *testing.T) {
 	}
 }
 
+func TestScanDerivesGroupFromFolders(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "deploy"), deployMD) // root-level: no group
+	writeSkill(t, filepath.Join(root, "typescript", "strict-mode"), `---
+name: strict-mode
+---`) // one level: group "typescript"
+	writeSkill(t, filepath.Join(root, "frontend", "react", "use-effect"), `---
+name: use-effect
+---`) // nested: group "frontend/react"
+
+	got, err := Scan(root, "s")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	groups := map[string]string{} // name -> group
+	for _, s := range got {
+		groups[s.Name] = s.Group
+	}
+	if groups["strict-mode"] != "typescript" {
+		t.Errorf("strict-mode group = %q, want typescript", groups["strict-mode"])
+	}
+	if groups["use-effect"] != "frontend/react" {
+		t.Errorf("use-effect group = %q, want frontend/react", groups["use-effect"])
+	}
+	// A top-level skill (single path segment) has no group.
+	if groups["deploy"] != "" {
+		t.Errorf("top-level skill group = %q, want empty", groups["deploy"])
+	}
+}
+
+func TestScanParsesDeprecated(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "boolform"), `---
+name: boolform
+deprecated: true
+---`)
+	writeSkill(t, filepath.Join(root, "reasonform"), `---
+name: reasonform
+deprecated: use new-skill instead
+---`)
+	writeSkill(t, filepath.Join(root, "live"), `---
+name: live
+---`)
+	writeSkill(t, filepath.Join(root, "explicitfalse"), `---
+name: explicitfalse
+deprecated: false
+---`)
+
+	got, err := Scan(root, "s")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	type dep struct {
+		deprecated bool
+		reason     string
+	}
+	byName := map[string]dep{}
+	for _, s := range got {
+		byName[s.Name] = dep{s.Deprecated, s.DeprecationReason}
+	}
+	if d := byName["boolform"]; !d.deprecated || d.reason != "" {
+		t.Errorf("boolform = %+v, want deprecated with no reason", d)
+	}
+	if d := byName["reasonform"]; !d.deprecated || d.reason != "use new-skill instead" {
+		t.Errorf("reasonform = %+v, want deprecated with reason", d)
+	}
+	if d := byName["live"]; d.deprecated {
+		t.Errorf("live = %+v, want not deprecated", d)
+	}
+	if d := byName["explicitfalse"]; d.deprecated {
+		t.Errorf("explicitfalse = %+v, want not deprecated", d)
+	}
+}
+
 func TestScanRootIsItselfASkill(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, root, deployMD)

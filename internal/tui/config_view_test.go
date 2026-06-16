@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -33,10 +34,10 @@ func TestConfigAddTargetFlow(t *testing.T) {
 		t.Fatalf("expected modeForm, got %v", m.mode)
 	}
 
-	m, _ = step(t, m, runes("cc"))        // type name
-	m, _ = step(t, m, key(tea.KeyTab))    // -> path field
-	m, _ = step(t, m, runes("/tmp/skl"))  // type path
-	m, _ = step(t, m, key(tea.KeyEnter))  // submit
+	m, _ = step(t, m, runes("cc"))       // type name
+	m, _ = step(t, m, key(tea.KeyTab))   // -> path field
+	m, _ = step(t, m, runes("/tmp/skl")) // type path
+	m, _ = step(t, m, key(tea.KeyEnter)) // submit
 
 	if m.mode != modeConfig {
 		t.Fatalf("after save expected modeConfig, got %v", m.mode)
@@ -69,6 +70,47 @@ func TestConfigDeleteEntry(t *testing.T) {
 	}
 }
 
+func TestConfigListsSourcesBeforeTargets(t *testing.T) {
+	m, _, _ := newConfigModel(t, &config.Config{
+		Targets: []config.TargetEntry{{Name: "t1", Path: "/t"}},
+		Sources: []config.SourceEntry{{Name: "s1", Location: "/s"}},
+	})
+	entries := m.cfgEntries()
+	if len(entries) != 2 || entries[0].kind != entrySource || entries[1].kind != entryTarget {
+		t.Fatalf("sources should come before targets: %+v", entries)
+	}
+}
+
+func TestConfigEditTargetFlow(t *testing.T) {
+	m, e, configPath := newConfigModel(t, &config.Config{
+		Targets: []config.TargetEntry{{Name: "cc", Path: "/old"}},
+	})
+	m, _ = step(t, m, runes("c")) // open config; cursor 0 -> target "cc"
+	m, _ = step(t, m, runes("e")) // edit it
+	if m.mode != modeForm || m.form == nil || !m.form.editing || m.form.origName != "cc" {
+		t.Fatalf("e should open a prefilled edit form: mode=%v form=%+v", m.mode, m.form)
+	}
+	if got := m.form.inputs[0].Value(); got != "cc" {
+		t.Fatalf("name field not prefilled, got %q", got)
+	}
+
+	m, _ = step(t, m, key(tea.KeyTab)) // -> path field
+	m, _ = step(t, m, runes("2"))      // append to the prefilled "/old"
+	m, _ = step(t, m, key(tea.KeyEnter))
+
+	if m.mode != modeConfig {
+		t.Fatalf("after save expected modeConfig, got %v", m.mode)
+	}
+	// Edited in place: still one target, not a second appended one.
+	if len(e.Config.Targets) != 1 || e.Config.Targets[0].Path != "/old2" {
+		t.Fatalf("edit not applied in place: %+v", e.Config.Targets)
+	}
+	reloaded, _ := config.Load(configPath)
+	if len(reloaded.Targets) != 1 || reloaded.Targets[0].Path != "/old2" {
+		t.Errorf("edit not persisted: %+v", reloaded.Targets)
+	}
+}
+
 func TestConfigEscReturnsToMatrixAndRefreshes(t *testing.T) {
 	m, _, _ := newConfigModel(t, &config.Config{Targets: []config.TargetEntry{{Name: "cc", Path: "/x"}}})
 	m, _ = step(t, m, runes("c"))
@@ -95,6 +137,31 @@ func TestConfigFormCancel(t *testing.T) {
 	}
 	if len(e.Config.Sources) != 0 {
 		t.Errorf("cancel should add nothing: %+v", e.Config.Sources)
+	}
+}
+
+func TestConfigClearSourceCache(t *testing.T) {
+	m, e, _ := newConfigModel(t, &config.Config{
+		Sources: []config.SourceEntry{{Name: "remote", Location: "https://github.com/o/r"}},
+	})
+	// Stand in a cached copy on disk for the source.
+	src := e.Config.DomainSources()[0]
+	dir := e.Fetcher.CacheDirFor(src)
+	if dir == "" {
+		t.Fatal("expected github source to be cacheable")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	m, _ = step(t, m, runes("c")) // open config; cursor 0 -> source "remote"
+	m, _ = step(t, m, runes("C")) // clear its cache
+
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("cache dir not removed: stat err = %v", err)
+	}
+	if m.cfgMsg == "" {
+		t.Error("expected a status message after clearing cache")
 	}
 }
 

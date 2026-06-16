@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss/table"
 
 	"github.com/earada/skillmux/internal/domain"
+	"github.com/earada/skillmux/internal/engine"
 	"github.com/earada/skillmux/internal/reconcile"
 )
 
@@ -102,6 +103,91 @@ func footerKeys(caps ...keycap) string {
 
 // --- matrix --------------------------------------------------------------
 
+// isDeprecated reports whether a skill should be treated as retired: either its
+// SKILL.md frontmatter says so, or it lives under a `deprecated` folder. Both
+// signals feed the same treatment — bottom section, glyph, struck name.
+func isDeprecated(s engine.AvailableSkill) bool {
+	return s.Deprecated || strings.Contains(strings.ToLower(s.Group), "deprecated")
+}
+
+// skillLabel renders the left-column label for a skill row. The name leads (it
+// is the eye-anchor) in an accent colour — or red when conflicting, dimmed and
+// struck when deprecated; its folder group trails as a dimmed hint, then the
+// Source in parentheses.
+func skillLabel(s engine.AvailableSkill, conflict bool) string {
+	var name string
+	switch {
+	case isDeprecated(s):
+		name = deprecatedStyle.Render(deprecatedGlyph + " " + s.Name)
+	case conflict:
+		name = conflictNameStyle.Render(s.Name)
+	default:
+		name = skillNameStyle.Render(s.Name)
+	}
+	if s.Group != "" {
+		name += groupStyle.Render("  ") + renderGroup(s.Group)
+	}
+	return name + " (" + s.Source + ")"
+}
+
+// renderGroup renders a folder-group hint dimmed, but reddens every occurrence
+// of the word "deprecated" (case-insensitive) so a `deprecated/` folder in the
+// path jumps out.
+func renderGroup(group string) string {
+	const word = "deprecated"
+	low := strings.ToLower(group)
+	var b strings.Builder
+	for i := 0; i < len(group); {
+		j := strings.Index(low[i:], word)
+		if j < 0 {
+			b.WriteString(groupStyle.Render(group[i:]))
+			break
+		}
+		j += i
+		b.WriteString(groupStyle.Render(group[i:j]))
+		b.WriteString(deprecatedWordStyle.Render(group[j : j+len(word)]))
+		i = j + len(word)
+	}
+	return b.String()
+}
+
+// dividerMarker is an invisible (zero-width) sentinel placed in a section
+// divider's first cell. lipgloss's table can't draw a border rule between two
+// chosen rows, so after rendering we swap every line carrying this marker for a
+// full-width rule (replaceDividers) — a clean line clear across the grid.
+const dividerMarker = "​"
+
+// dividerRow is the placeholder row inserted between two sections; its cells are
+// empty (so it never widens a column) save for the invisible marker.
+func dividerRow(ntargets int) []string {
+	row := make([]string, ntargets+1)
+	row[0] = dividerMarker
+	return row
+}
+
+// replaceDividers swaps each marker-bearing line in a rendered table for the
+// table's own header rule (`├───┼───┤`), so dividers span the full width with
+// proper column junctions regardless of the final (possibly clamped) widths.
+func replaceDividers(out string) string {
+	if !strings.Contains(out, dividerMarker) {
+		return out
+	}
+	lines := strings.Split(out, "\n")
+	rule := ""
+	for _, l := range lines {
+		if strings.Contains(l, "├") { // the header/body separator rule
+			rule = l
+			break
+		}
+	}
+	for i, l := range lines {
+		if strings.Contains(l, dividerMarker) {
+			lines[i] = rule
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // matrixVisibleRows is how many skill rows fit in the table given the terminal
 // height. It must agree with viewMatrix's layout so scrolling stays in sync.
 func (m Model) matrixVisibleRows() int {
@@ -113,6 +199,9 @@ func (m Model) matrixVisibleRows() int {
 	// header(1) + blank(1) + table chrome top/header/separator/bottom(4) +
 	// scroll status line(1) + footer.
 	avail := h - 2 - 4 - 1 - footerH
+	// Reserve room for the section-divider lines so one never shoves a skill
+	// row off-screen; they cost a line each on top of the data rows.
+	avail -= m.sectionBoundaries()
 	if avail < 1 {
 		avail = 1
 	}
@@ -179,7 +268,7 @@ func (m Model) viewMatrix() string {
 	rows := make([][]string, len(visible))
 	for vi, s := range visible {
 		row := make([]string, len(m.targets)+1)
-		row[0] = s.Name + " (" + s.Source + ")"
+		row[0] = skillLabel(s, nameCount[s.Name] > 1)
 		grid[vi] = make([]cellMeta, len(m.targets))
 		for ci, t := range m.targets {
 			st := m.status[statusKey{s.Name, s.Source, t.Name}]
@@ -198,25 +287,47 @@ func (m Model) viewMatrix() string {
 		rows[vi] = row
 	}
 
+	// Interleave a divider before each visible row that opens a new section, so
+	// the grid reads "installed │ not installed │ deprecated". rowToData maps a
+	// table row back to its index in `visible` (-1 for a divider) so the
+	// StyleFunc and cursor logic stay aligned despite the inserted rows.
+	tableRows := make([][]string, 0, len(visible)+m.sectionBoundaries())
+	rowToData := make([]int, 0, cap(tableRows))
+	for vi := range visible {
+		gi := offset + vi
+		if gi > 0 && m.section(skills[gi]) != m.section(skills[gi-1]) {
+			tableRows = append(tableRows, dividerRow(len(m.targets)))
+			rowToData = append(rowToData, -1)
+		}
+		tableRows = append(tableRows, rows[vi])
+		rowToData = append(rowToData, vi)
+	}
+
 	cell := lipgloss.NewStyle().Padding(0, 1)
 	tbl := table.New().
 		Border(lipgloss.RoundedBorder()).
 		BorderStyle(tableBorderStyle).
 		Headers(headers...).
-		Rows(rows...).
+		Rows(tableRows...).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			if row == table.HeaderRow {
 				return tableHeadStyle.Padding(0, 1)
 			}
-			if col == 0 {
-				if nameCount[visible[row].Name] > 1 {
-					return cell.Foreground(cRed)
+			di := rowToData[row]
+			if di < 0 { // section divider: content is pre-styled, only space it
+				if col == 0 {
+					return cell
 				}
+				return cell.Align(lipgloss.Center)
+			}
+			if col == 0 {
+				// Name colour (accent / conflict-red / deprecated) is baked into
+				// the label itself; the cell only supplies padding.
 				return cell
 			}
 			ci := col - 1
-			meta := grid[row][ci]
-			if offset+row == m.row && ci == m.col {
+			meta := grid[di][ci]
+			if offset+di == m.row && ci == m.col {
 				return cursorStyle.Padding(0, 1).Align(lipgloss.Center)
 			}
 			s := cell.Align(lipgloss.Center).Foreground(statusStyles[meta.st].GetForeground())
@@ -230,6 +341,7 @@ func (m Model) viewMatrix() string {
 	if w, _ := m.dims(); lipgloss.Width(out) > w {
 		out = tbl.Width(w).String()
 	}
+	out = replaceDividers(out)
 
 	total := fmt.Sprintf("%d", len(skills))
 	if m.filter != "" {
@@ -239,7 +351,17 @@ func (m Model) viewMatrix() string {
 	if vis < len(skills) {
 		scroll += dimStyle.Render("  ↑↓ to scroll")
 	}
-	body := lipgloss.JoinVertical(lipgloss.Left, out, scroll)
+	lines := []string{out, scroll}
+	// Surface the deprecation note for the skill under the cursor; the glyph in
+	// the row only says "deprecated", this says why / what to use instead.
+	if cur, ok := m.curSkill(); ok && isDeprecated(cur) {
+		note := deprecatedGlyph + " deprecated"
+		if cur.DeprecationReason != "" {
+			note += ": " + cur.DeprecationReason
+		}
+		lines = append(lines, dimStyle.Render(note))
+	}
+	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
 	return m.frame(header, body, footer)
 }
 
@@ -261,6 +383,7 @@ func (m Model) matrixFooter() string {
 		dimStyle.Render("· not-installed"),
 		statusStyles[domain.StatusConflict].Render("! conflict"),
 		dimStyle.Render("✓ selected"),
+		deprecatedStyle.Render(deprecatedGlyph + " deprecated"),
 	}, dimStyle.Render("   "))
 	// The search line replaces the legend while typing; once a filter is set
 	// but the line is dismissed, show a compact reminder of how to edit/clear.
@@ -371,7 +494,12 @@ func (m Model) viewConfig() string {
 	if len(entries) == 0 {
 		b.WriteString(dimStyle.Render("No targets or sources yet."))
 	}
+	w, _ := m.dims()
 	for i, e := range entries {
+		// Rule a line where Sources give way to Targets, mirroring the matrix.
+		if i > 0 && e.kind != entries[i-1].kind {
+			b.WriteString(dimStyle.Render(strings.Repeat("─", max(0, w-6))) + "\n")
+		}
 		kind := "target"
 		if e.kind == entrySource {
 			kind = "source"
@@ -382,11 +510,16 @@ func (m Model) viewConfig() string {
 		}
 		b.WriteString(line + "\n")
 	}
+	if m.cfgMsg != "" {
+		b.WriteString("\n" + dimStyle.Render(m.cfgMsg) + "\n")
+	}
 	return m.frame(m.headerBar("config"), m.panel(strings.TrimRight(b.String(), "\n")),
 		footerKeys(
 			keycap{"t", "add target"},
 			keycap{"s", "add source"},
+			keycap{"e", "edit"},
 			keycap{"d", "delete"},
+			keycap{"C", "clear cache"},
 			keycap{"↑↓", "move"},
 			keycap{"esc", "back"},
 		))

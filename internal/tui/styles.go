@@ -39,6 +39,23 @@ var (
 	// cursorStyle highlights the focused matrix cell / list row.
 	cursorStyle = lipgloss.NewStyle().Background(cBrand).Foreground(cBrandFg).Bold(true)
 
+	// skillNameStyle makes the skill name — the row's eye-anchor — stand out
+	// from the dimmed group hint and the Source.
+	skillNameStyle = lipgloss.NewStyle().Foreground(cBrand).Bold(true)
+	// conflictNameStyle flags a name offered by more than one Source.
+	conflictNameStyle = lipgloss.NewStyle().Foreground(cRed).Bold(true)
+	// groupStyle dims the folder-hierarchy hint shown after a skill name.
+	groupStyle = dimStyle
+	// deprecatedWordStyle reddens the word "deprecated" when it appears inside a
+	// Skill's folder path, so a repo that buckets retired skills under a
+	// `deprecated/` folder stands out even without a frontmatter flag.
+	deprecatedWordStyle = lipgloss.NewStyle().Foreground(cRed)
+	// deprecatedStyle marks a skill its author has retired: dimmed and struck
+	// through so it reads as "still listed, but don't reach for it".
+	deprecatedStyle = lipgloss.NewStyle().Foreground(cDim).Strikethrough(true)
+	// deprecatedGlyph precedes a deprecated skill's name in the matrix.
+	deprecatedGlyph = "⊘"
+
 	// tableBorderStyle colours the matrix grid lines.
 	tableBorderStyle = lipgloss.NewStyle().Foreground(cBorder)
 	tableHeadStyle   = lipgloss.NewStyle().Bold(true).Foreground(cBrand).Align(lipgloss.Center)

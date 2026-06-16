@@ -67,6 +67,13 @@ type AvailableSkill struct {
 	Description string
 	Dir         string
 	Fingerprint string
+	// Group is the folder hierarchy the Skill sits under within its Source
+	// (empty for a root-level Skill); shown as a dimmed prefix in the matrix.
+	Group string
+	// Deprecated and DeprecationReason mirror the SKILL.md frontmatter so the
+	// matrix can flag a Skill its author has retired.
+	Deprecated        bool
+	DeprecationReason string
 }
 
 // Catalog is the result of a Refresh: the available Skills and any per-Source
@@ -108,11 +115,14 @@ func (e *Engine) Refresh() Catalog {
 				continue
 			}
 			cat.Skills = append(cat.Skills, AvailableSkill{
-				Name:        sk.Name,
-				Source:      sk.SourceName,
-				Description: sk.Description,
-				Dir:         dir,
-				Fingerprint: fp,
+				Name:              sk.Name,
+				Source:            sk.SourceName,
+				Description:       sk.Description,
+				Dir:               dir,
+				Fingerprint:       fp,
+				Group:             sk.Group,
+				Deprecated:        sk.Deprecated,
+				DeprecationReason: sk.DeprecationReason,
 			})
 		}
 	}
