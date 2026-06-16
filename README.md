@@ -61,6 +61,15 @@ name = "local"
 location = "~/dev/skills"
 ```
 
+### Private GitHub repos
+
+Private repos work with no extra config — Skillmux uses an ambient credential it
+never stores. It looks for a token in `GH_TOKEN`, then `GITHUB_TOKEN`, then falls
+back to `gh auth token` (so being logged in with the GitHub CLI is enough). With
+a token it fetches over the authenticated GitHub API; without one it stays
+anonymous, exactly as before. Only `github.com` is supported — GitHub Enterprise
+is out of scope. See [ADR 0004](./docs/adr/0004-private-repos-via-token-over-https.md).
+
 Run `skillmux` to open the matrix. Keys: arrows move · `space` toggle a cell ·
 `a` all targets for a skill · `n` none · `/` filter skills by name, group or
 source (vim-style, `esc` clears) · `r` refresh · `p` preview the plan · `c`
