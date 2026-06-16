@@ -6,30 +6,10 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 
 	"github.com/earada/skillmux/internal/domain"
-	"github.com/earada/skillmux/internal/engine"
 	"github.com/earada/skillmux/internal/reconcile"
-)
-
-var (
-	titleStyle  = lipgloss.NewStyle().Bold(true)
-	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	cursorStyle = lipgloss.NewStyle().Reverse(true)
-	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-
-	statusStyles = map[domain.Status]lipgloss.Style{
-		domain.StatusNotInstalled:    lipgloss.NewStyle().Foreground(lipgloss.Color("241")),
-		domain.StatusUpToDate:        lipgloss.NewStyle().Foreground(lipgloss.Color("78")),
-		domain.StatusUpdateAvailable: lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
-		domain.StatusConflict:        lipgloss.NewStyle().Foreground(lipgloss.Color("203")),
-	}
-	statusGlyph = map[domain.Status]string{
-		domain.StatusNotInstalled:    "·",
-		domain.StatusUpToDate:        "=",
-		domain.StatusUpdateAvailable: "↑",
-		domain.StatusConflict:        "!",
-	}
 )
 
 // View renders the current screen.
@@ -50,97 +30,209 @@ func (m Model) View() string {
 	}
 }
 
-func (m Model) viewMatrix() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("skillmux"))
-	if m.refreshing {
-		b.WriteString(dimStyle.Render("  refreshing…"))
-	} else if m.applying {
-		b.WriteString(dimStyle.Render("  applying…"))
+// --- layout primitives ---------------------------------------------------
+
+// dims returns the usable terminal size, falling back to a sane width when no
+// WindowSizeMsg has arrived yet (e.g. in tests). A height of 0 means "unbounded":
+// render everything without scrolling or bottom-padding.
+func (m Model) dims() (w, h int) {
+	w, h = m.width, m.height
+	if w <= 0 {
+		w = 80
 	}
-	b.WriteString("\n\n")
+	return w, h
+}
+
+// headerBar is the brand pill on the left with an optional status on the right.
+func (m Model) headerBar(status string) string {
+	w, _ := m.dims()
+	left := titleStyle.Render("skillmux")
+	right := ""
+	if status != "" {
+		right = dimStyle.Render(status)
+	}
+	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// frame stacks header, body and footer, pushing the footer to the bottom of the
+// screen when the height is known.
+func (m Model) frame(header, body, footer string) string {
+	w, h := m.dims()
+	// Truncate every line to the terminal width so a long footer/header can't
+	// wrap and throw off the height arithmetic (and the scroll window).
+	clip := lipgloss.NewStyle().MaxWidth(w)
+	header, footer = clip.Render(header), clip.Render(footer)
+	out := header + "\n\n" + body
+	if footer == "" {
+		return out
+	}
+	if h > 0 {
+		gap := h - lipgloss.Height(out) - lipgloss.Height(footer)
+		if gap > 0 {
+			out += strings.Repeat("\n", gap)
+		}
+	}
+	return out + "\n" + footer
+}
+
+// panel wraps content in the rounded box, fitting it to the terminal width.
+func (m Model) panel(content string) string {
+	w, _ := m.dims()
+	st := panelStyle
+	if w > 8 {
+		st = st.Width(w - 4) // account for border (2) + horizontal padding (2)
+	}
+	return st.Render(content)
+}
+
+type keycap struct{ key, desc string }
+
+// footerKeys renders a "key desc · key desc" hint line.
+func footerKeys(caps ...keycap) string {
+	parts := make([]string, len(caps))
+	for i, c := range caps {
+		parts[i] = keyStyle.Render(c.key) + " " + keyDescStyle.Render(c.desc)
+	}
+	return strings.Join(parts, keyDescStyle.Render("  ·  "))
+}
+
+// --- matrix --------------------------------------------------------------
+
+// matrixVisibleRows is how many skill rows fit in the table given the terminal
+// height. It must agree with viewMatrix's layout so scrolling stays in sync.
+func (m Model) matrixVisibleRows() int {
+	_, h := m.dims()
+	if h <= 0 {
+		return len(m.skills) // unbounded: show everything (tests, first frame)
+	}
+	footerH := lipgloss.Height(m.matrixFooter())
+	// header(1) + blank(1) + table chrome top/header/separator/bottom(4) +
+	// scroll status line(1) + footer.
+	avail := h - 2 - 4 - 1 - footerH
+	if avail < 1 {
+		avail = 1
+	}
+	return avail
+}
+
+func (m Model) viewMatrix() string {
+	status := ""
+	switch {
+	case m.refreshing:
+		status = "⟳ refreshing…"
+	case m.applying:
+		status = "⟳ applying…"
+	}
+	header := m.headerBar(status)
+	footer := m.matrixFooter()
 
 	if len(m.targets) == 0 {
-		b.WriteString(dimStyle.Render("No targets configured. Add some to your config.toml.\n"))
-		return b.String()
+		return m.frame(header, m.panel(dimStyle.Render("No targets configured. Press ")+
+			keyStyle.Render("c")+dimStyle.Render(" to add one.")), footer)
 	}
 	if len(m.skills) == 0 {
+		msg := "No skills found in the configured sources."
 		if m.refreshing {
-			b.WriteString(dimStyle.Render("Scanning sources…\n"))
-		} else {
-			b.WriteString(dimStyle.Render("No skills found in the configured sources.\n"))
+			msg = "Scanning sources…"
 		}
-		b.WriteString("\n" + m.footer())
-		return b.String()
+		return m.frame(header, m.panel(dimStyle.Render(msg)), footer)
 	}
 
-	// A skill name offered by more than one Source is ambiguous: the user must
-	// pick which Source wins per Target (selection is exclusive). Flag it.
+	// A skill name offered by more than one Source is ambiguous; flag the row.
 	nameCount := map[string]int{}
 	for _, s := range m.skills {
 		nameCount[s.Name]++
 	}
-	plainLabel := func(s engine.AvailableSkill) string {
-		l := s.Name + " (" + s.Source + ")"
-		if nameCount[s.Name] > 1 {
-			l += " ⚠"
-		}
-		return l
-	}
 
-	// Column widths: each target column is wide enough for its name and the
-	// "[x ↑]" cell.
-	const cellW = 5
-	skillColW := 0
-	for _, s := range m.skills {
-		if w := lipgloss.Width(plainLabel(s)); w > skillColW {
-			skillColW = w
-		}
+	vis := m.matrixVisibleRows()
+	offset := m.scroll
+	end := offset + vis
+	if end > len(m.skills) {
+		end = len(m.skills)
 	}
+	visible := m.skills[offset:end]
 
-	// Header row.
-	b.WriteString(strings.Repeat(" ", skillColW+1))
+	headers := make([]string, 0, len(m.targets)+1)
+	headers = append(headers, "Skill")
 	for _, t := range m.targets {
-		b.WriteString(pad(t.Name, cellW+1))
+		headers = append(headers, t.Name)
 	}
-	b.WriteString("\n")
 
-	// Skill rows.
-	for ri, s := range m.skills {
-		label := s.Name + " " + dimStyle.Render("("+s.Source+")")
-		if nameCount[s.Name] > 1 {
-			label += " " + statusStyles[domain.StatusConflict].Render("⚠")
-		}
-		b.WriteString(pad(label, skillColW+1))
+	// Build the row strings and a parallel grid of per-cell metadata that the
+	// StyleFunc closure consults for colouring.
+	type cellMeta struct {
+		st      domain.Status
+		desired bool
+	}
+	grid := make([][]cellMeta, len(visible))
+	rows := make([][]string, len(visible))
+	for vi, s := range visible {
+		row := make([]string, len(m.targets)+1)
+		row[0] = s.Name + " (" + s.Source + ")"
+		grid[vi] = make([]cellMeta, len(m.targets))
 		for ci, t := range m.targets {
-			cell := m.renderCell(s.Name, s.Source, t.Name)
-			if ri == m.row && ci == m.col {
-				cell = cursorStyle.Render(cell)
+			st := m.status[statusKey{s.Name, s.Source, t.Name}]
+			des := m.desired[reconcile.Cell{Skill: s.Name, Source: s.Source, Target: t.Name}]
+			grid[vi][ci] = cellMeta{st, des}
+			glyph := statusGlyph[st]
+			if glyph == "" {
+				glyph = "·"
 			}
-			b.WriteString(cell + " ")
+			mark := " "
+			if des {
+				mark = "✓"
+			}
+			row[ci+1] = mark + glyph
 		}
-		b.WriteString("\n")
+		rows[vi] = row
 	}
 
-	b.WriteString("\n" + m.footer())
-	return b.String()
+	cell := lipgloss.NewStyle().Padding(0, 1)
+	tbl := table.New().
+		Border(lipgloss.RoundedBorder()).
+		BorderStyle(tableBorderStyle).
+		Headers(headers...).
+		Rows(rows...).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == table.HeaderRow {
+				return tableHeadStyle.Padding(0, 1)
+			}
+			if col == 0 {
+				if nameCount[visible[row].Name] > 1 {
+					return cell.Foreground(cRed)
+				}
+				return cell
+			}
+			ci := col - 1
+			meta := grid[row][ci]
+			if offset+row == m.row && ci == m.col {
+				return cursorStyle.Padding(0, 1).Align(lipgloss.Center)
+			}
+			s := cell.Align(lipgloss.Center).Foreground(statusStyles[meta.st].GetForeground())
+			if meta.desired {
+				s = s.Bold(true)
+			}
+			return s
+		})
+
+	out := tbl.String()
+	if w, _ := m.dims(); lipgloss.Width(out) > w {
+		out = tbl.Width(w).String()
+	}
+
+	scroll := dimStyle.Render(fmt.Sprintf("showing %d–%d of %d", offset+1, end, len(m.skills)))
+	if vis < len(m.skills) {
+		scroll += dimStyle.Render("  ↑↓ to scroll")
+	}
+	body := lipgloss.JoinVertical(lipgloss.Left, out, scroll)
+	return m.frame(header, body, footer)
 }
 
-func (m Model) renderCell(skill, source, target string) string {
-	st := m.status[statusKey{skill, source, target}]
-	mark := " "
-	if m.desired[reconcile.Cell{Skill: skill, Source: source, Target: target}] {
-		mark = "x"
-	}
-	glyph := statusGlyph[st]
-	if glyph == "" {
-		glyph = "·"
-	}
-	body := fmt.Sprintf("[%s%s]", mark, statusStyles[st].Render(glyph))
-	return body
-}
-
-func (m Model) footer() string {
+func (m Model) matrixFooter() string {
 	var b strings.Builder
 	if len(m.sourceErrors) > 0 {
 		names := make([]string, 0, len(m.sourceErrors))
@@ -149,64 +241,79 @@ func (m Model) footer() string {
 		}
 		sort.Strings(names)
 		for _, n := range names {
-			b.WriteString(errStyle.Render(fmt.Sprintf("source %q: %v", n, m.sourceErrors[n])) + "\n")
+			b.WriteString(errStyle.Render(fmt.Sprintf("⚠ source %q: %v", n, m.sourceErrors[n])) + "\n")
 		}
 	}
-	legend := dimStyle.Render("= up-to-date  ↑ update  · not-installed  ! conflict")
-	keys := dimStyle.Render("↑↓←→ move · space toggle · a all · n none · r refresh · p plan · c config · q quit")
+	legend := strings.Join([]string{
+		statusStyles[domain.StatusUpToDate].Render("= up-to-date"),
+		statusStyles[domain.StatusUpdateAvailable].Render("↑ update"),
+		dimStyle.Render("· not-installed"),
+		statusStyles[domain.StatusConflict].Render("! conflict"),
+		dimStyle.Render("✓ selected"),
+	}, dimStyle.Render("   "))
+	keys := footerKeys(
+		keycap{"↑↓←→", "move"},
+		keycap{"space", "toggle"},
+		keycap{"a", "all"},
+		keycap{"n", "none"},
+		keycap{"r", "refresh"},
+		keycap{"p", "plan"},
+		keycap{"c", "config"},
+		keycap{"q", "quit"},
+	)
 	b.WriteString(legend + "\n" + keys)
 	return b.String()
 }
 
+// --- plan / overwrite / result ------------------------------------------
+
 func (m Model) viewPlan() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Plan") + "\n\n")
+	b.WriteString(headingStyle.Render("Plan") + "\n\n")
 	if len(m.plan.Operations) == 0 {
-		b.WriteString(dimStyle.Render("Nothing to do — selection already matches reality.\n"))
-		b.WriteString("\n" + dimStyle.Render("press any key to go back"))
-		return b.String()
+		b.WriteString(dimStyle.Render("Nothing to do — selection already matches reality."))
+		return m.frame(m.headerBar("plan"), m.panel(b.String()),
+			footerKeys(keycap{"any key", "back"}))
 	}
 	for _, op := range m.plan.Operations {
-		line := fmt.Sprintf("  %-9s %s", op.Kind, describeOp(op))
-		switch op.Kind {
-		case reconcile.Conflict:
+		line := fmt.Sprintf("%-9s %s", op.Kind, describeOp(op))
+		if op.Kind == reconcile.Conflict {
 			line = errStyle.Render(line)
 		}
 		b.WriteString(line + "\n")
 	}
-	b.WriteString("\n" + titleStyle.Render("Apply this plan? ") + dimStyle.Render("[y] yes  [n] no"))
-	return b.String()
+	return m.frame(m.headerBar("plan"), m.panel(strings.TrimRight(b.String(), "\n")),
+		footerKeys(keycap{"y", "apply"}, keycap{"n", "cancel"}))
 }
 
 func describeOp(op reconcile.Operation) string {
-	s := fmt.Sprintf("%s", op.SkillName)
+	s := op.SkillName
 	if op.SourceName != "" {
 		s += fmt.Sprintf(" (%s)", op.SourceName)
 	}
 	s += " → " + op.TargetName
 	if op.Reason != "" {
-		s += dimStyle.Render("  ["+op.Reason+"]")
+		s += dimStyle.Render("  [" + op.Reason + "]")
 	}
 	return s
 }
 
 func (m Model) viewOverwrite() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Overwrite untracked folders?") + "\n\n")
+	b.WriteString(headingStyle.Render("Overwrite untracked folders?") + "\n\n")
 	b.WriteString(dimStyle.Render("These folders already exist but were not installed by skillmux:") + "\n\n")
 	for _, c := range m.collisions {
-		b.WriteString(errStyle.Render("  "+c.SkillName) +
+		b.WriteString(errStyle.Render(c.SkillName) +
 			dimStyle.Render(" ("+c.SourceName+") → "+c.TargetName) + "\n")
-		b.WriteString(dimStyle.Render("    "+c.Dir) + "\n")
+		b.WriteString(dimStyle.Render("  "+c.Dir) + "\n")
 	}
-	b.WriteString("\n" + titleStyle.Render("Overwrite them? ") +
-		dimStyle.Render("[y] yes, adopt  [n] cancel"))
-	return b.String()
+	return m.frame(m.headerBar("overwrite"), m.panel(strings.TrimRight(b.String(), "\n")),
+		footerKeys(keycap{"y", "adopt"}, keycap{"n", "cancel"}))
 }
 
 func (m Model) viewResult() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Result") + "\n\n")
+	b.WriteString(headingStyle.Render("Result") + "\n\n")
 	if m.applyErr != nil {
 		b.WriteString(errStyle.Render("persist error: "+m.applyErr.Error()) + "\n\n")
 	}
@@ -214,24 +321,30 @@ func (m Model) viewResult() string {
 	for _, r := range m.report.Results {
 		if r.OK {
 			ok++
-			b.WriteString(statusStyles[domain.StatusUpToDate].Render("  ✓ ") + describeOp(r.Op) + "\n")
+			b.WriteString(statusStyles[domain.StatusUpToDate].Render("✓ ") + describeOp(r.Op) + "\n")
 		} else {
 			failed++
-			b.WriteString(errStyle.Render("  ✗ ") + describeOp(r.Op) + errStyle.Render("  "+r.Err.Error()) + "\n")
+			b.WriteString(errStyle.Render("✗ ") + describeOp(r.Op) + errStyle.Render("  "+r.Err.Error()) + "\n")
 		}
 	}
-	b.WriteString(fmt.Sprintf("\n%d ok, %d failed\n", ok, failed))
-	b.WriteString("\n" + dimStyle.Render("press any key to continue · q to quit"))
-	return b.String()
+	summary := statusStyles[domain.StatusUpToDate].Render(fmt.Sprintf("%d ok", ok))
+	if failed > 0 {
+		summary += dimStyle.Render(", ") + errStyle.Render(fmt.Sprintf("%d failed", failed))
+	}
+	b.WriteString("\n" + summary)
+	return m.frame(m.headerBar("result"), m.panel(b.String()),
+		footerKeys(keycap{"any key", "continue"}, keycap{"q", "quit"}))
 }
+
+// --- config / form -------------------------------------------------------
 
 func (m Model) viewConfig() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Configuration") + "\n\n")
+	b.WriteString(headingStyle.Render("Configuration") + "\n\n")
 
 	entries := m.cfgEntries()
 	if len(entries) == 0 {
-		b.WriteString(dimStyle.Render("No targets or sources yet.") + "\n")
+		b.WriteString(dimStyle.Render("No targets or sources yet."))
 	}
 	for i, e := range entries {
 		kind := "target"
@@ -240,34 +353,38 @@ func (m Model) viewConfig() string {
 		}
 		line := fmt.Sprintf("%-7s %-16s %s", kind, e.name, dimStyle.Render(e.detail))
 		if i == m.cfgCursor {
-			line = cursorStyle.Render(fmt.Sprintf("%-7s %-16s %s", kind, e.name, e.detail))
+			line = cursorStyle.Render(fmt.Sprintf(" %-7s %-16s %s ", kind, e.name, e.detail))
 		}
-		b.WriteString("  " + line + "\n")
+		b.WriteString(line + "\n")
 	}
-
-	b.WriteString("\n" + dimStyle.Render("t add target · s add source · d delete · ↑↓ move · esc back"))
-	return b.String()
+	return m.frame(m.headerBar("config"), m.panel(strings.TrimRight(b.String(), "\n")),
+		footerKeys(
+			keycap{"t", "add target"},
+			keycap{"s", "add source"},
+			keycap{"d", "delete"},
+			keycap{"↑↓", "move"},
+			keycap{"esc", "back"},
+		))
 }
 
 func (m Model) viewForm() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render(m.form.title) + "\n\n")
+	b.WriteString(headingStyle.Render(m.form.title) + "\n\n")
 	for i, in := range m.form.inputs {
 		marker := "  "
 		if i == m.form.focus {
-			marker = "> "
+			marker = keyStyle.Render("▸ ")
 		}
 		b.WriteString(marker + dimStyle.Render(pad(m.form.labels[i]+":", 22)) + in.View() + "\n")
 	}
 	if m.form.err != "" {
-		b.WriteString("\n" + errStyle.Render(m.form.err) + "\n")
+		b.WriteString("\n" + errStyle.Render("⚠ "+m.form.err))
 	}
-	b.WriteString("\n" + dimStyle.Render("tab next · enter save · esc cancel"))
-	return b.String()
+	return m.frame(m.headerBar("config"), m.panel(strings.TrimRight(b.String(), "\n")),
+		footerKeys(keycap{"tab", "next"}, keycap{"enter", "save"}, keycap{"esc", "cancel"}))
 }
 
-// pad right-pads s to width w (ignoring ANSI styling width discrepancies for
-// simple labels).
+// pad right-pads s to width w (ANSI-aware).
 func pad(s string, w int) string {
 	gap := w - lipgloss.Width(s)
 	if gap < 0 {

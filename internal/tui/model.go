@@ -40,6 +40,7 @@ type Model struct {
 	loaded       bool
 
 	row, col   int
+	scroll     int // index of the first visible skill row (vertical scroll)
 	refreshing bool
 	applying   bool
 	mode       viewMode
@@ -117,6 +118,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.clampCursor() // re-window the matrix for the new height
 		return m, nil
 
 	case refreshDoneMsg:
@@ -194,6 +196,14 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.col--
 	case "right", "l":
 		m.col++
+	case "pgup":
+		m.row -= m.matrixVisibleRows()
+	case "pgdown":
+		m.row += m.matrixVisibleRows()
+	case "home", "g":
+		m.row = 0
+	case "end", "G":
+		m.row = len(m.skills) - 1
 	case " ":
 		m.toggleCurrent()
 	case "a":
@@ -303,5 +313,20 @@ func (m *Model) clampCursor() {
 	}
 	if m.col >= len(m.targets) {
 		m.col = max(0, len(m.targets)-1)
+	}
+
+	// Keep the cursor row inside the visible scroll window.
+	vis := m.matrixVisibleRows()
+	if m.row < m.scroll {
+		m.scroll = m.row
+	}
+	if m.row >= m.scroll+vis {
+		m.scroll = m.row - vis + 1
+	}
+	if hi := len(m.skills) - vis; m.scroll > hi {
+		m.scroll = hi
+	}
+	if m.scroll < 0 {
+		m.scroll = 0
 	}
 }
