@@ -35,7 +35,99 @@ func testEngine(t *testing.T, targets ...string) *engine.Engine {
 	return engine.New(cfg, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: t.TempDir()}, "", mp)
 }
 
+// testEngineSkills builds an engine whose single source offers the named skills.
+func testEngineSkills(t *testing.T, names ...string) *engine.Engine {
+	t.Helper()
+	srcRoot := t.TempDir()
+	for _, n := range names {
+		dir := filepath.Join(srcRoot, n)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		os.WriteFile(filepath.Join(dir, "SKILL.md"),
+			[]byte("---\nname: "+n+"\ndescription: d\n---\nv1"), 0o644)
+	}
+	cfg := &config.Config{
+		Targets: []config.TargetEntry{{Name: "cc", Path: t.TempDir()}},
+		Sources: []config.SourceEntry{{Name: "local", Location: srcRoot}},
+	}
+	mp := filepath.Join(t.TempDir(), "m.json")
+	return engine.New(cfg, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: t.TempDir()}, "", mp)
+}
+
 func runes(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
+
+func TestModelFilterNarrowsRows(t *testing.T) {
+	e := testEngineSkills(t, "deploy", "build", "rebuild")
+	m := New(e).onRefreshed(e.Refresh())
+	if got := len(m.rows()); got != 3 {
+		t.Fatalf("expected 3 skills, got %d", got)
+	}
+
+	// "/" opens the search line; typing "build" filters live.
+	updated, _ := m.Update(runes("/"))
+	m = updated.(Model)
+	if !m.searching {
+		t.Fatal("'/' should start searching")
+	}
+	for _, r := range "build" {
+		updated, _ = m.Update(runes(string(r)))
+		m = updated.(Model)
+	}
+	rows := m.rows()
+	if len(rows) != 2 {
+		t.Fatalf("expected build+rebuild, got %+v", rows)
+	}
+	for _, s := range rows {
+		if s.Name != "build" && s.Name != "rebuild" {
+			t.Errorf("unexpected match %q", s.Name)
+		}
+	}
+}
+
+func TestModelFilterEnterKeepsAndEscClears(t *testing.T) {
+	e := testEngineSkills(t, "deploy", "build")
+	m := New(e).onRefreshed(e.Refresh())
+
+	m = applyKeys(m, runes("/"), runes("d"), runes("e"), runes("p"))
+	enter, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = enter.(Model)
+	if m.searching {
+		t.Fatal("enter should leave the search line")
+	}
+	if m.filter != "dep" || len(m.rows()) != 1 {
+		t.Fatalf("enter should keep filter; filter=%q rows=%d", m.filter, len(m.rows()))
+	}
+
+	esc, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = esc.(Model)
+	if m.filter != "" || len(m.rows()) != 2 {
+		t.Fatalf("esc should clear filter; filter=%q rows=%d", m.filter, len(m.rows()))
+	}
+}
+
+func TestModelFilterCursorStaysInRange(t *testing.T) {
+	e := testEngineSkills(t, "deploy", "build", "rebuild")
+	m := New(e).onRefreshed(e.Refresh())
+	m.row = 2 // last row of the unfiltered list
+
+	// Filter down to a single match: the cursor must snap back into range.
+	m = applyKeys(m, runes("/"), runes("d"), runes("e"), runes("p"))
+	if m.row >= len(m.rows()) {
+		t.Fatalf("cursor row %d out of range for %d rows", m.row, len(m.rows()))
+	}
+	if _, ok := m.curSkill(); !ok {
+		t.Fatal("curSkill should resolve after filtering")
+	}
+}
+
+func applyKeys(m Model, keys ...tea.KeyMsg) Model {
+	for _, k := range keys {
+		u, _ := m.Update(k)
+		m = u.(Model)
+	}
+	return m
+}
 
 func TestModelRefreshPopulatesSkills(t *testing.T) {
 	e := testEngine(t, "cc")

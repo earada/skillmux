@@ -107,7 +107,7 @@ func footerKeys(caps ...keycap) string {
 func (m Model) matrixVisibleRows() int {
 	_, h := m.dims()
 	if h <= 0 {
-		return len(m.skills) // unbounded: show everything (tests, first frame)
+		return len(m.rows()) // unbounded: show everything (tests, first frame)
 	}
 	footerH := lipgloss.Height(m.matrixFooter())
 	// header(1) + blank(1) + table chrome top/header/separator/bottom(4) +
@@ -142,7 +142,14 @@ func (m Model) viewMatrix() string {
 		return m.frame(header, m.panel(dimStyle.Render(msg)), footer)
 	}
 
+	skills := m.rows()
+	if len(skills) == 0 {
+		msg := fmt.Sprintf("No skills match %q.", m.filter)
+		return m.frame(header, m.panel(dimStyle.Render(msg)), footer)
+	}
+
 	// A skill name offered by more than one Source is ambiguous; flag the row.
+	// Counted over the full catalogue so the flag is stable under filtering.
 	nameCount := map[string]int{}
 	for _, s := range m.skills {
 		nameCount[s.Name]++
@@ -151,10 +158,10 @@ func (m Model) viewMatrix() string {
 	vis := m.matrixVisibleRows()
 	offset := m.scroll
 	end := offset + vis
-	if end > len(m.skills) {
-		end = len(m.skills)
+	if end > len(skills) {
+		end = len(skills)
 	}
-	visible := m.skills[offset:end]
+	visible := skills[offset:end]
 
 	headers := make([]string, 0, len(m.targets)+1)
 	headers = append(headers, "Skill")
@@ -224,8 +231,12 @@ func (m Model) viewMatrix() string {
 		out = tbl.Width(w).String()
 	}
 
-	scroll := dimStyle.Render(fmt.Sprintf("showing %d–%d of %d", offset+1, end, len(m.skills)))
-	if vis < len(m.skills) {
+	total := fmt.Sprintf("%d", len(skills))
+	if m.filter != "" {
+		total = fmt.Sprintf("%d of %d", len(skills), len(m.skills))
+	}
+	scroll := dimStyle.Render(fmt.Sprintf("showing %d–%d of %s", offset+1, end, total))
+	if vis < len(skills) {
 		scroll += dimStyle.Render("  ↑↓ to scroll")
 	}
 	body := lipgloss.JoinVertical(lipgloss.Left, out, scroll)
@@ -251,11 +262,25 @@ func (m Model) matrixFooter() string {
 		statusStyles[domain.StatusConflict].Render("! conflict"),
 		dimStyle.Render("✓ selected"),
 	}, dimStyle.Render("   "))
+	// The search line replaces the legend while typing; once a filter is set
+	// but the line is dismissed, show a compact reminder of how to edit/clear.
+	switch {
+	case m.searching:
+		b.WriteString(m.search.View() + "\n")
+		b.WriteString(footerKeys(keycap{"enter", "apply"}, keycap{"esc", "clear"}))
+		return b.String()
+	case m.filter != "":
+		b.WriteString(keyStyle.Render("/") + dimStyle.Render(" "+m.filter) + "\n")
+		b.WriteString(footerKeys(keycap{"/", "edit"}, keycap{"esc", "clear"}, keycap{"q", "quit"}))
+		return b.String()
+	}
+
 	keys := footerKeys(
 		keycap{"↑↓←→", "move"},
 		keycap{"space", "toggle"},
 		keycap{"a", "all"},
 		keycap{"n", "none"},
+		keycap{"/", "filter"},
 		keycap{"r", "refresh"},
 		keycap{"p", "plan"},
 		keycap{"c", "config"},

@@ -5,7 +5,9 @@ package tui
 
 import (
 	"sort"
+	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/earada/skillmux/internal/apply"
@@ -52,6 +54,10 @@ type Model struct {
 	cfgCursor int         // cursor in the config-management list
 	form      *configForm // active add form, when mode == modeForm
 
+	search    textinput.Model // the "/" search line
+	searching bool            // true while the search line is capturing input
+	filter    string          // active filter query; rows() narrows to matches
+
 	width, height int
 }
 
@@ -59,12 +65,16 @@ type Model struct {
 // last cached catalog (if any) so startup is instant; Init then refreshes in
 // the background to pick up upstream changes.
 func New(e *engine.Engine) Model {
+	search := textinput.New()
+	search.Prompt = "/"
+	search.Placeholder = "filter skills…"
 	m := Model{
 		eng:          e,
 		targets:      e.Config.DomainTargets(),
 		status:       map[statusKey]domain.Status{},
 		desired:      map[reconcile.Cell]bool{},
 		sourceErrors: map[string]error{},
+		search:       search,
 	}
 	if cached := e.CachedCatalog(); len(cached.Skills) > 0 {
 		m = m.onRefreshed(cached)
@@ -185,9 +195,22 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.searching {
+		return m.onSearchKey(msg)
+	}
 	switch msg.String() {
 	case "q":
 		return m, tea.Quit
+	case "/":
+		m.searching = true
+		m.search.SetValue(m.filter)
+		m.search.CursorEnd()
+		m.search.Focus()
+		return m, nil
+	case "esc":
+		if m.filter != "" {
+			m.clearFilter()
+		}
 	case "up", "k":
 		m.row--
 	case "down", "j":
@@ -203,7 +226,7 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "home", "g":
 		m.row = 0
 	case "end", "G":
-		m.row = len(m.skills) - 1
+		m.row = len(m.rows()) - 1
 	case " ":
 		m.toggleCurrent()
 	case "a":
@@ -228,6 +251,38 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.clampCursor()
 	return m, nil
+}
+
+// onSearchKey drives the "/" search line. Typing filters the matrix live (vim
+// incremental search): Enter keeps the filter and returns to navigation, Esc
+// abandons the search and restores the full list.
+func (m Model) onSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		m.searching = false
+		m.search.Blur()
+		return m, nil
+	case "esc":
+		m.searching = false
+		m.clearFilter()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.search, cmd = m.search.Update(msg)
+	// Live filter: re-narrow and snap the cursor to the top of the results.
+	m.filter = m.search.Value()
+	m.row, m.scroll = 0, 0
+	m.clampCursor()
+	return m, cmd
+}
+
+// clearFilter drops the active filter and resets the search line.
+func (m *Model) clearFilter() {
+	m.filter = ""
+	m.search.SetValue("")
+	m.search.Blur()
+	m.row, m.scroll = 0, 0
+	m.clampCursor()
 }
 
 func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -295,18 +350,38 @@ func (m *Model) toggleCurrent() {
 }
 
 func (m *Model) curSkill() (engine.AvailableSkill, bool) {
-	if m.row < 0 || m.row >= len(m.skills) {
+	rows := m.rows()
+	if m.row < 0 || m.row >= len(rows) {
 		return engine.AvailableSkill{}, false
 	}
-	return m.skills[m.row], true
+	return rows[m.row], true
+}
+
+// rows is the list of skills currently shown in the matrix: all of them, or
+// just those matching the active filter (case-insensitive substring over the
+// skill name and its source). The cursor (m.row) and scroll index always refer
+// to this filtered list, never to m.skills directly.
+func (m Model) rows() []engine.AvailableSkill {
+	if m.filter == "" {
+		return m.skills
+	}
+	q := strings.ToLower(m.filter)
+	out := make([]engine.AvailableSkill, 0, len(m.skills))
+	for _, s := range m.skills {
+		if strings.Contains(strings.ToLower(s.Name+" "+s.Source), q) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (m *Model) clampCursor() {
+	n := len(m.rows())
 	if m.row < 0 {
 		m.row = 0
 	}
-	if m.row >= len(m.skills) {
-		m.row = max(0, len(m.skills)-1)
+	if m.row >= n {
+		m.row = max(0, n-1)
 	}
 	if m.col < 0 {
 		m.col = 0
@@ -323,7 +398,7 @@ func (m *Model) clampCursor() {
 	if m.row >= m.scroll+vis {
 		m.scroll = m.row - vis + 1
 	}
-	if hi := len(m.skills) - vis; m.scroll > hi {
+	if hi := n - vis; m.scroll > hi {
 		m.scroll = hi
 	}
 	if m.scroll < 0 {
