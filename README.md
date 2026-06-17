@@ -72,9 +72,13 @@ is out of scope. See [ADR 0004](./docs/adr/0004-private-repos-via-token-over-htt
 
 Run `skillmux` to open the matrix. Keys: arrows move · `space` toggle a cell ·
 `a` all targets for a skill · `n` none · `/` filter skills by name, group or
-source (vim-style, `esc` clears) · `r` refresh · `p` preview the plan · `c`
+source (vim-style, `esc` clears) · `v` view a skill · `r` refresh · `p` preview
+the plan · `c`
 manage targets/sources ·
-`q` quit. From the plan, `y` applies. The config
+`q` quit. From the plan, `y` applies. `v` opens a read-only explorer for the
+skill under the cursor — metadata plus a navigable file tree; `enter` on a file
+shows its contents (markdown rendered, anything else raw), `esc` steps back. The
+config
 screen (`c`) lists sources then targets (split by a rule) and adds (`t`/`s`),
 edits (`e`) and deletes (`d`) them, writing changes back to `config.toml`; you
 can still edit the file by hand. `C` clears the download cache of the source
