@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/earada/skillmux/internal/domain"
@@ -96,18 +97,118 @@ func TestExtractTarGzRejectsTraversal(t *testing.T) {
 	}
 }
 
-// stubTransport returns the same response for any request.
+// stubTransport returns the same response for any request, recording the last
+// request it saw so tests can assert on the URL and headers.
 type stubTransport struct {
 	status int
 	body   []byte
+	last   *http.Request
 }
 
-func (s stubTransport) RoundTrip(*http.Request) (*http.Response, error) {
+func (s *stubTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	s.last = r
 	return &http.Response{
 		StatusCode: s.status,
 		Body:       io.NopCloser(bytes.NewReader(s.body)),
 		Header:     make(http.Header),
 	}, nil
+}
+
+func tokenFunc(tok string) func() (string, error) {
+	return func() (string, error) { return tok, nil }
+}
+
+func TestApiTarballURL(t *testing.T) {
+	cases := []struct {
+		repo, branch, want string
+	}{
+		{"https://github.com/owner/repo", "main", "https://api.github.com/repos/owner/repo/tarball/main"},
+		{"https://github.com/owner/repo", "", "https://api.github.com/repos/owner/repo/tarball"},
+		{"git@github.com:owner/repo.git", "v1", "https://api.github.com/repos/owner/repo/tarball/v1"},
+	}
+	for _, c := range cases {
+		got, err := apiTarballURL(c.repo, c.branch)
+		if err != nil {
+			t.Errorf("apiTarballURL(%q,%q): %v", c.repo, c.branch, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("apiTarballURL(%q,%q) = %q, want %q", c.repo, c.branch, got, c.want)
+		}
+	}
+}
+
+func TestFetchGitHubWithTokenUsesAuthenticatedAPI(t *testing.T) {
+	tarball := makeTarGz(t, "repo-main", map[string]string{"SKILL.md": "x"})
+	tr := &stubTransport{status: 200, body: tarball}
+	f := &Fetcher{
+		Client:   &http.Client{Transport: tr},
+		CacheDir: t.TempDir(),
+		Token:    tokenFunc("sekret-token"),
+	}
+	if _, err := f.Fetch(domain.Source{
+		Name: "remote", Kind: domain.SourceGitHub,
+		Location: "https://github.com/owner/repo", Branch: "main",
+	}); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got, want := tr.last.URL.String(), "https://api.github.com/repos/owner/repo/tarball/main"; got != want {
+		t.Errorf("request URL = %q, want %q", got, want)
+	}
+	if got := tr.last.Header.Get("Authorization"); got != "Bearer sekret-token" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer sekret-token")
+	}
+}
+
+func TestFetchGitHubWithoutTokenStaysAnonymous(t *testing.T) {
+	tarball := makeTarGz(t, "repo-main", map[string]string{"SKILL.md": "x"})
+	tr := &stubTransport{status: 200, body: tarball}
+	f := &Fetcher{
+		Client:   &http.Client{Transport: tr},
+		CacheDir: t.TempDir(),
+		Token:    tokenFunc(""),
+	}
+	if _, err := f.Fetch(domain.Source{
+		Name: "remote", Kind: domain.SourceGitHub,
+		Location: "https://github.com/owner/repo", Branch: "main",
+	}); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got, want := tr.last.URL.String(), "https://codeload.github.com/owner/repo/tar.gz/main"; got != want {
+		t.Errorf("request URL = %q, want %q", got, want)
+	}
+	if got := tr.last.Header.Get("Authorization"); got != "" {
+		t.Errorf("anonymous fetch sent Authorization = %q, want none", got)
+	}
+}
+
+// A failed fetch must never echo the token in its error.
+func TestFetchGitHubErrorDoesNotLeakToken(t *testing.T) {
+	const secret = "super-secret-token-value"
+	tr := &stubTransport{status: 401, body: []byte("Bad credentials")}
+	f := &Fetcher{
+		Client:   &http.Client{Transport: tr},
+		CacheDir: t.TempDir(),
+		Token:    tokenFunc(secret),
+	}
+	_, err := f.Fetch(domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: "https://github.com/o/r"})
+	if err == nil {
+		t.Fatal("expected error on 401")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("error leaked token: %q", err.Error())
+	}
+}
+
+func TestGithubStatusErrorHints(t *testing.T) {
+	withTok := githubStatusError("r", 404, true).Error()
+	if strings.Contains(withTok, "GH_TOKEN") {
+		t.Errorf("404-with-token should not push the user to set a token: %q", withTok)
+	}
+	noTok := githubStatusError("r", 404, false).Error()
+	if !strings.Contains(noTok, "GH_TOKEN") {
+		t.Errorf("404-without-token should mention GH_TOKEN: %q", noTok)
+	}
 }
 
 func TestFetchGitHubDownloadsExtractsAndAppliesSubpath(t *testing.T) {
@@ -116,7 +217,7 @@ func TestFetchGitHubDownloadsExtractsAndAppliesSubpath(t *testing.T) {
 		"README.md":              "x",
 	})
 	f := &Fetcher{
-		Client:   &http.Client{Transport: stubTransport{status: 200, body: tarball}},
+		Client:   &http.Client{Transport: &stubTransport{status: 200, body: tarball}},
 		CacheDir: t.TempDir(),
 	}
 	dir, err := f.Fetch(domain.Source{
@@ -134,7 +235,7 @@ func TestFetchGitHubDownloadsExtractsAndAppliesSubpath(t *testing.T) {
 
 func TestFetchGitHubErrorsOnBadStatus(t *testing.T) {
 	f := &Fetcher{
-		Client:   &http.Client{Transport: stubTransport{status: 404, body: []byte("nope")}},
+		Client:   &http.Client{Transport: &stubTransport{status: 404, body: []byte("nope")}},
 		CacheDir: t.TempDir(),
 	}
 	_, err := f.Fetch(domain.Source{Name: "r", Kind: domain.SourceGitHub, Location: "https://github.com/o/r"})
@@ -169,7 +270,7 @@ func TestFetchLocalErrorsWhenMissing(t *testing.T) {
 func TestClearCacheRemovesGitHubSourceDir(t *testing.T) {
 	tarball := makeTarGz(t, "repo-main", map[string]string{"SKILL.md": "x"})
 	f := &Fetcher{
-		Client:   &http.Client{Transport: stubTransport{status: 200, body: tarball}},
+		Client:   &http.Client{Transport: &stubTransport{status: 200, body: tarball}},
 		CacheDir: t.TempDir(),
 	}
 	src := domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: "https://github.com/owner/repo"}

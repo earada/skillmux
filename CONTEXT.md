@@ -9,7 +9,7 @@ A self-contained directory identified by its `SKILL.md` file (frontmatter + auxi
 _Avoid_: package, plugin, command
 
 **Source**:
-An origin that holds one or more Skills — either a public GitHub URL or a local folder. A Source may contain N Skills (each subfolder with a `SKILL.md` is one Skill); the user picks which to install.
+An origin that holds one or more Skills — either a GitHub URL (public, or private when a credential is available) or a local folder. A Source may contain N Skills (each subfolder with a `SKILL.md` is one Skill); the user picks which to install.
 _Avoid_: repo (when ambiguous), registry
 
 **Group**:
