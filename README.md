@@ -61,14 +61,15 @@ name = "local"
 location = "~/dev/skills"
 ```
 
-### Private GitHub repos
+### GitHub repos
 
-Private repos work with no extra config — Skillmux uses an ambient credential it
-never stores. It looks for a token in `GH_TOKEN`, then `GITHUB_TOKEN`, then falls
-back to `gh auth token` (so being logged in with the GitHub CLI is enough). With
-a token it fetches over the authenticated GitHub API; without one it stays
-anonymous, exactly as before. Only `github.com` is supported — GitHub Enterprise
-is out of scope. See [ADR 0004](./docs/adr/0004-private-repos-via-token-over-https.md).
+Skillmux fetches GitHub Sources with `git`, kept as a shallow clone under the
+cache and updated in place — so **git must be installed** (a GitHub Source on a
+machine without git fails fast; local Sources still work). Authentication is
+left to git: private repos work through your own credential helper or SSH keys,
+and an `git@github.com:owner/repo` SSH location clones directly — Skillmux never
+reads or stores a token. Only `github.com` is in scope. See
+[ADR 0006](./docs/adr/0006-fetch-github-sources-via-git-clone.md).
 
 Run `skillmux` to open the matrix. Keys: arrows move · `space` toggle a cell ·
 `a` all targets for a skill · `n` none · `/` filter skills by name, group or
@@ -97,7 +98,7 @@ internal/manifest   Skillmux-owned Manifest (JSON, XDG ~/.local/state/skillmux)
 internal/paths      XDG path resolution
 internal/source     recursive Skill discovery (SKILL.md frontmatter: name, description, deprecated; group from path)
 internal/fingerprint deterministic content hash of a Skill folder
-internal/fetch      resolve a Source (local folder / GitHub tarball + cache)
+internal/fetch      resolve a Source (local folder / shallow git clone in cache)
 internal/reconcile  desired selection -> Plan (pure)
 internal/apply      execute a Plan against disk (best-effort, safe)
 internal/engine     orchestration: Refresh / Status / Plan / Apply

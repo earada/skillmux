@@ -1,246 +1,191 @@
 package fetch
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
-	"io"
-	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/earada/skillmux/internal/domain"
 )
 
-func TestTarballURL(t *testing.T) {
-	cases := []struct {
-		repo, branch, want string
-	}{
-		{"https://github.com/owner/repo", "main", "https://codeload.github.com/owner/repo/tar.gz/main"},
-		{"https://github.com/owner/repo", "", "https://codeload.github.com/owner/repo/tar.gz/HEAD"},
-		{"https://github.com/owner/repo.git", "", "https://codeload.github.com/owner/repo/tar.gz/HEAD"},
-		{"https://github.com/owner/repo/", "v1.2.3", "https://codeload.github.com/owner/repo/tar.gz/v1.2.3"},
-		{"git@github.com:owner/repo.git", "main", "https://codeload.github.com/owner/repo/tar.gz/main"},
-	}
-	for _, c := range cases {
-		got, err := TarballURL(c.repo, c.branch)
-		if err != nil {
-			t.Errorf("TarballURL(%q,%q): %v", c.repo, c.branch, err)
-			continue
-		}
-		if got != c.want {
-			t.Errorf("TarballURL(%q,%q) = %q, want %q", c.repo, c.branch, got, c.want)
-		}
-	}
-}
-
-func TestTarballURLRejectsNonRepo(t *testing.T) {
-	if _, err := TarballURL("https://github.com/owner", ""); err == nil {
-		t.Error("expected error for URL without owner/repo")
-	}
-}
-
-// makeTarGz builds a gzipped tar where every path is under a single top-level
-// directory (as GitHub archives are), from a name->content map.
-func makeTarGz(t *testing.T, topDir string, files map[string]string) []byte {
+// requireGit skips a test when git is not installed. git is a hard requirement
+// in production (see ADR 0006); the skip only keeps the suite green on a
+// git-less developer machine.
+func requireGit(t *testing.T) {
 	t.Helper()
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+}
+
+// git runs a git command in dir and fails the test on error. Author/committer
+// identity and default branch are pinned via -c so the test does not depend on
+// the machine's global git config.
+func git(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	base := []string{
+		"-c", "user.email=test@example.com",
+		"-c", "user.name=Test",
+		"-c", "commit.gpgsign=false",
+		"-c", "init.defaultBranch=main",
+	}
+	cmd := exec.Command("git", append(base, args...)...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// writeFile writes content to dir/rel, creating parent directories.
+func writeFile(t *testing.T, dir, rel, content string) {
+	t.Helper()
+	full := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// initRepo creates a git repository in a fresh temp dir with the given files
+// committed on the default branch (main), and returns its path.
+func initRepo(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	git(t, dir, "init")
+	git(t, dir, "checkout", "-b", "main")
 	for name, content := range files {
-		full := topDir + "/" + name
-		if err := tw.WriteHeader(&tar.Header{Name: full, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tw.Write([]byte(content)); err != nil {
-			t.Fatal(err)
-		}
+		writeFile(t, dir, name, content)
 	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := gz.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-m", "initial")
+	return dir
 }
 
-func TestExtractTarGzStripsTopDir(t *testing.T) {
-	dest := t.TempDir()
-	data := makeTarGz(t, "repo-main", map[string]string{
-		"SKILL.md":         "v1",
-		"scripts/run.sh":   "echo hi",
-		"nested/a/b/c.txt": "deep",
-	})
-	if err := extractTarGz(bytes.NewReader(data), dest); err != nil {
-		t.Fatalf("extractTarGz: %v", err)
+func TestFetchGitHubClonesDefaultBranch(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t, map[string]string{"SKILL.md": "v1"})
+	f := &Fetcher{CacheDir: t.TempDir()}
+
+	dir, err := f.Fetch(domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: repo})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
 	}
-	got, err := os.ReadFile(filepath.Join(dest, "SKILL.md"))
+	got, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
 	if err != nil || string(got) != "v1" {
-		t.Errorf("SKILL.md not extracted at top level: %v %q", err, got)
+		t.Errorf("SKILL.md = %q, err %v; want %q", got, err, "v1")
 	}
-	if _, err := os.Stat(filepath.Join(dest, "scripts", "run.sh")); err != nil {
-		t.Errorf("nested file missing: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dest, "repo-main")); !os.IsNotExist(err) {
-		t.Error("top-level archive directory should have been stripped")
+	if !isGitRepo(dir) {
+		t.Error("expected the cached clone to be a git repository")
 	}
 }
 
-func TestExtractTarGzRejectsTraversal(t *testing.T) {
-	dest := t.TempDir()
-	data := makeTarGz(t, "repo-main", map[string]string{"../escape.txt": "evil"})
-	if err := extractTarGz(bytes.NewReader(data), dest); err == nil {
-		t.Error("expected error on path traversal")
-	}
-}
+func TestFetchGitHubChecksOutBranch(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t, map[string]string{"SKILL.md": "main-content"})
+	// A feature branch with different content.
+	git(t, repo, "checkout", "-b", "feature")
+	writeFile(t, repo, "SKILL.md", "feature-content")
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "on feature")
+	git(t, repo, "checkout", "main")
 
-// stubTransport returns the same response for any request, recording the last
-// request it saw so tests can assert on the URL and headers.
-type stubTransport struct {
-	status int
-	body   []byte
-	last   *http.Request
-}
-
-func (s *stubTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	s.last = r
-	return &http.Response{
-		StatusCode: s.status,
-		Body:       io.NopCloser(bytes.NewReader(s.body)),
-		Header:     make(http.Header),
-	}, nil
-}
-
-func tokenFunc(tok string) func() (string, error) {
-	return func() (string, error) { return tok, nil }
-}
-
-func TestApiTarballURL(t *testing.T) {
-	cases := []struct {
-		repo, branch, want string
-	}{
-		{"https://github.com/owner/repo", "main", "https://api.github.com/repos/owner/repo/tarball/main"},
-		{"https://github.com/owner/repo", "", "https://api.github.com/repos/owner/repo/tarball"},
-		{"git@github.com:owner/repo.git", "v1", "https://api.github.com/repos/owner/repo/tarball/v1"},
-	}
-	for _, c := range cases {
-		got, err := apiTarballURL(c.repo, c.branch)
-		if err != nil {
-			t.Errorf("apiTarballURL(%q,%q): %v", c.repo, c.branch, err)
-			continue
-		}
-		if got != c.want {
-			t.Errorf("apiTarballURL(%q,%q) = %q, want %q", c.repo, c.branch, got, c.want)
-		}
-	}
-}
-
-func TestFetchGitHubWithTokenUsesAuthenticatedAPI(t *testing.T) {
-	tarball := makeTarGz(t, "repo-main", map[string]string{"SKILL.md": "x"})
-	tr := &stubTransport{status: 200, body: tarball}
-	f := &Fetcher{
-		Client:   &http.Client{Transport: tr},
-		CacheDir: t.TempDir(),
-		Token:    tokenFunc("sekret-token"),
-	}
-	if _, err := f.Fetch(domain.Source{
-		Name: "remote", Kind: domain.SourceGitHub,
-		Location: "https://github.com/owner/repo", Branch: "main",
-	}); err != nil {
+	f := &Fetcher{CacheDir: t.TempDir()}
+	dir, err := f.Fetch(domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: repo, Branch: "feature"})
+	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if got, want := tr.last.URL.String(), "https://api.github.com/repos/owner/repo/tarball/main"; got != want {
-		t.Errorf("request URL = %q, want %q", got, want)
-	}
-	if got := tr.last.Header.Get("Authorization"); got != "Bearer sekret-token" {
-		t.Errorf("Authorization = %q, want %q", got, "Bearer sekret-token")
+	got, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil || string(got) != "feature-content" {
+		t.Errorf("SKILL.md = %q, err %v; want %q", got, err, "feature-content")
 	}
 }
 
-func TestFetchGitHubWithoutTokenStaysAnonymous(t *testing.T) {
-	tarball := makeTarGz(t, "repo-main", map[string]string{"SKILL.md": "x"})
-	tr := &stubTransport{status: 200, body: tarball}
-	f := &Fetcher{
-		Client:   &http.Client{Transport: tr},
-		CacheDir: t.TempDir(),
-		Token:    tokenFunc(""),
+func TestFetchGitHubUpdatesExistingClone(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t, map[string]string{"SKILL.md": "v1"})
+	f := &Fetcher{CacheDir: t.TempDir()}
+
+	if _, err := f.Fetch(domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: repo}); err != nil {
+		t.Fatalf("first Fetch: %v", err)
 	}
-	if _, err := f.Fetch(domain.Source{
-		Name: "remote", Kind: domain.SourceGitHub,
-		Location: "https://github.com/owner/repo", Branch: "main",
-	}); err != nil {
-		t.Fatalf("Fetch: %v", err)
+
+	// Move the source forward, then re-fetch the same Source.
+	writeFile(t, repo, "SKILL.md", "v2")
+	writeFile(t, repo, "NEW.md", "added")
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "v2")
+
+	dir, err := f.Fetch(domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: repo})
+	if err != nil {
+		t.Fatalf("second Fetch: %v", err)
 	}
-	if got, want := tr.last.URL.String(), "https://codeload.github.com/owner/repo/tar.gz/main"; got != want {
-		t.Errorf("request URL = %q, want %q", got, want)
+	got, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil || string(got) != "v2" {
+		t.Errorf("after update SKILL.md = %q, err %v; want %q", got, err, "v2")
 	}
-	if got := tr.last.Header.Get("Authorization"); got != "" {
-		t.Errorf("anonymous fetch sent Authorization = %q, want none", got)
+	if _, err := os.Stat(filepath.Join(dir, "NEW.md")); err != nil {
+		t.Errorf("expected NEW.md after update: %v", err)
 	}
 }
 
-// A failed fetch must never echo the token in its error.
-func TestFetchGitHubErrorDoesNotLeakToken(t *testing.T) {
-	const secret = "super-secret-token-value"
-	tr := &stubTransport{status: 401, body: []byte("Bad credentials")}
-	f := &Fetcher{
-		Client:   &http.Client{Transport: tr},
-		CacheDir: t.TempDir(),
-		Token:    tokenFunc(secret),
-	}
-	_, err := f.Fetch(domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: "https://github.com/o/r"})
-	if err == nil {
-		t.Fatal("expected error on 401")
-	}
-	if strings.Contains(err.Error(), secret) {
-		t.Errorf("error leaked token: %q", err.Error())
-	}
-}
-
-func TestGithubStatusErrorHints(t *testing.T) {
-	withTok := githubStatusError("r", 404, true).Error()
-	if strings.Contains(withTok, "GH_TOKEN") {
-		t.Errorf("404-with-token should not push the user to set a token: %q", withTok)
-	}
-	noTok := githubStatusError("r", 404, false).Error()
-	if !strings.Contains(noTok, "GH_TOKEN") {
-		t.Errorf("404-without-token should mention GH_TOKEN: %q", noTok)
-	}
-}
-
-func TestFetchGitHubDownloadsExtractsAndAppliesSubpath(t *testing.T) {
-	tarball := makeTarGz(t, "repo-main", map[string]string{
+func TestFetchGitHubAppliesSubpath(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t, map[string]string{
 		"skills/deploy/SKILL.md": "---\nname: deploy\n---",
 		"README.md":              "x",
 	})
-	f := &Fetcher{
-		Client:   &http.Client{Transport: &stubTransport{status: 200, body: tarball}},
-		CacheDir: t.TempDir(),
-	}
+	f := &Fetcher{CacheDir: t.TempDir()}
 	dir, err := f.Fetch(domain.Source{
-		Name: "remote", Kind: domain.SourceGitHub,
-		Location: "https://github.com/owner/repo", Branch: "main", Subpath: "skills",
+		Name: "remote", Kind: domain.SourceGitHub, Location: repo, Subpath: "skills",
 	})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	// Subpath applied: the returned dir should contain deploy/SKILL.md.
 	if _, err := os.Stat(filepath.Join(dir, "deploy", "SKILL.md")); err != nil {
 		t.Errorf("expected skills subpath content, got: %v", err)
 	}
 }
 
-func TestFetchGitHubErrorsOnBadStatus(t *testing.T) {
-	f := &Fetcher{
-		Client:   &http.Client{Transport: &stubTransport{status: 404, body: []byte("nope")}},
-		CacheDir: t.TempDir(),
-	}
-	_, err := f.Fetch(domain.Source{Name: "r", Kind: domain.SourceGitHub, Location: "https://github.com/o/r"})
+func TestFetchGitHubErrorsOnBadRepo(t *testing.T) {
+	requireGit(t)
+	f := &Fetcher{CacheDir: t.TempDir()}
+	// A nonexistent local path is a valid owner/repo shape but an invalid clone.
+	_, err := f.Fetch(domain.Source{
+		Name: "broken", Kind: domain.SourceGitHub,
+		Location: filepath.Join(t.TempDir(), "owner", "does-not-exist"),
+	})
 	if err == nil {
-		t.Error("expected error on 404")
+		t.Error("expected error cloning a nonexistent repository")
+	}
+}
+
+func TestFetchGitHubRejectsNonRepoLocation(t *testing.T) {
+	requireGit(t)
+	f := &Fetcher{CacheDir: t.TempDir()}
+	_, err := f.Fetch(domain.Source{Name: "bad", Kind: domain.SourceGitHub, Location: "https://github.com/owner"})
+	if err == nil {
+		t.Error("expected error for a Location without owner/repo")
+	}
+}
+
+func TestOwnerRepo(t *testing.T) {
+	cases := []struct{ in, owner, repo string }{
+		{"https://github.com/owner/repo", "owner", "repo"},
+		{"https://github.com/owner/repo.git", "owner", "repo"},
+		{"https://github.com/owner/repo/", "owner", "repo"},
+		{"git@github.com:owner/repo.git", "owner", "repo"},
+	}
+	for _, c := range cases {
+		o, r, err := ownerRepo(c.in)
+		if err != nil || o != c.owner || r != c.repo {
+			t.Errorf("ownerRepo(%q) = %q,%q,%v; want %q,%q,nil", c.in, o, r, err, c.owner, c.repo)
+		}
+	}
+	if _, _, err := ownerRepo("https://github.com/owner"); err == nil {
+		t.Error("expected error for URL without owner/repo")
 	}
 }
 
@@ -268,12 +213,11 @@ func TestFetchLocalErrorsWhenMissing(t *testing.T) {
 }
 
 func TestClearCacheRemovesGitHubSourceDir(t *testing.T) {
-	tarball := makeTarGz(t, "repo-main", map[string]string{"SKILL.md": "x"})
-	f := &Fetcher{
-		Client:   &http.Client{Transport: &stubTransport{status: 200, body: tarball}},
-		CacheDir: t.TempDir(),
-	}
-	src := domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: "https://github.com/owner/repo"}
+	requireGit(t)
+	repo := initRepo(t, map[string]string{"SKILL.md": "x"})
+	f := &Fetcher{CacheDir: t.TempDir()}
+	src := domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: repo}
+
 	dir, err := f.Fetch(src)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
@@ -302,5 +246,16 @@ func TestClearCacheIsNoOpForLocalSource(t *testing.T) {
 	}
 	if cached {
 		t.Error("ClearCache(local) = true, want false (not cached)")
+	}
+}
+
+func TestFetchGitHubRequiresGit(t *testing.T) {
+	// With an empty PATH, exec.LookPath("git") fails and the fetch must report
+	// the missing-git requirement rather than attempting a clone.
+	t.Setenv("PATH", "")
+	f := &Fetcher{CacheDir: t.TempDir()}
+	_, err := f.Fetch(domain.Source{Name: "r", Kind: domain.SourceGitHub, Location: "https://github.com/o/r"})
+	if err == nil {
+		t.Fatal("expected error when git is unavailable")
 	}
 }
