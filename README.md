@@ -53,7 +53,7 @@ path = "~/.claude/skills"
 [[source]]
 name = "my-skills"
 location = "https://github.com/owner/repo"
-branch  = "main"     # optional; default branch when omitted
+branch  = "main"     # optional; a branch, tag, or commit SHA — default branch when omitted
 subpath = "skills"   # optional; narrows where skills are scanned
 
 [[source]]

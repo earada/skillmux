@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/earada/skillmux/internal/domain"
@@ -35,6 +36,18 @@ func git(t *testing.T, dir string, args ...string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
+}
+
+// gitOut runs a git command in dir and returns its trimmed stdout.
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // writeFile writes content to dir/rel, creating parent directories.
@@ -79,6 +92,53 @@ func TestFetchGitHubClonesDefaultBranch(t *testing.T) {
 	}
 	if !isGitRepo(dir) {
 		t.Error("expected the cached clone to be a git repository")
+	}
+}
+
+func TestFetchGitHubClonesPinnedCommit(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t, map[string]string{"SKILL.md": "v1"})
+	first := gitOut(t, repo, "rev-parse", "HEAD")
+	// Advance the repo so the pin points at history, not the tip.
+	writeFile(t, repo, "SKILL.md", "v2")
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "v2")
+
+	f := &Fetcher{CacheDir: t.TempDir()}
+	src := domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: repo, Branch: first}
+	dir, err := f.Fetch(src)
+	if err != nil {
+		t.Fatalf("Fetch pinned commit: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if string(got) != "v1" {
+		t.Errorf("pinned commit should yield the v1 content, got %q", got)
+	}
+
+	rev, ok := f.Revision(src)
+	if !ok || rev.ShortSHA == "" {
+		t.Fatalf("revision missing for pinned commit: %+v ok=%v", rev, ok)
+	}
+	if rev.Ref != "" {
+		t.Errorf("a SHA-pinned source should have an empty ref label, got %q", rev.Ref)
+	}
+	if !strings.HasPrefix(first, rev.ShortSHA) {
+		t.Errorf("short sha %q should be a prefix of full %q", rev.ShortSHA, first)
+	}
+}
+
+func TestLooksLikeCommitSHA(t *testing.T) {
+	yes := []string{"aab6645", "4152bf612541cf6cc1384230c5cc035135cd9429"}
+	no := []string{"", "main", "v1.2.3", "feature/x", "abc", "AAB6645" /* uppercase */, "release-1234567"}
+	for _, s := range yes {
+		if !looksLikeCommitSHA(s) {
+			t.Errorf("looksLikeCommitSHA(%q) = false, want true", s)
+		}
+	}
+	for _, s := range no {
+		if looksLikeCommitSHA(s) {
+			t.Errorf("looksLikeCommitSHA(%q) = true, want false", s)
+		}
 	}
 }
 

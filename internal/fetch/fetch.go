@@ -97,13 +97,28 @@ func (f *Fetcher) fetchGitHub(src domain.Source, skipCheckout bool) (string, err
 }
 
 // freshClone removes any stale contents at dest and shallow-clones the ref into
-// it. An empty ref clones the repository's default branch.
+// it. An empty ref clones the repository's default branch. A commit SHA cannot
+// be cloned with --branch, so it is fetched explicitly into a freshly
+// initialised repo instead (GitHub serves a reachable SHA over a shallow fetch).
 func freshClone(repoURL, dest, ref string) error {
 	if err := os.RemoveAll(dest); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
+	}
+	if looksLikeCommitSHA(ref) {
+		if err := os.MkdirAll(dest, 0o755); err != nil {
+			return err
+		}
+		if _, err := runGit(dest, "init", "-q"); err != nil {
+			return err
+		}
+		if _, err := runGit(dest, "remote", "add", "origin", repoURL); err != nil {
+			return err
+		}
+		// No working tree to protect on a fresh clone, so always check out.
+		return updateClone(dest, ref, false)
 	}
 	args := []string{"clone", "--depth", "1"}
 	if ref != "" {
@@ -112,6 +127,22 @@ func freshClone(repoURL, dest, ref string) error {
 	args = append(args, "--", repoURL, dest)
 	_, err := runGit("", args...)
 	return err
+}
+
+// looksLikeCommitSHA reports whether ref is a lowercase hex commit id (7–40
+// chars) rather than a branch or tag name — such a ref must be fetched
+// explicitly, not passed to `git clone --branch`. A branch literally named like
+// a hex string is vanishingly rare and not worth distinguishing.
+func looksLikeCommitSHA(ref string) bool {
+	if len(ref) < 7 || len(ref) > 40 {
+		return false
+	}
+	for _, r := range ref {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 // updateClone brings an existing clone up to the requested ref by fetching it
@@ -188,9 +219,18 @@ func (f *Fetcher) Revision(src domain.Source) (domain.Revision, bool) {
 		return domain.Revision{}, false
 	}
 	ref := src.Branch
-	if ref == "" {
+	switch {
+	case looksLikeCommitSHA(ref):
+		// A SHA pin: the short SHA alone is the clearest label (avoid the
+		// redundant "fullsha @ shortsha").
+		ref = ""
+	case ref == "":
+		// Default branch: resolve the checked-out branch name, but leave it
+		// empty when HEAD is detached so the label is just the short SHA.
 		if out, err := runGit(dir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
-			ref = strings.TrimSpace(out)
+			if b := strings.TrimSpace(out); b != "HEAD" {
+				ref = b
+			}
 		}
 	}
 	return domain.Revision{Ref: ref, ShortSHA: strings.TrimSpace(sha)}, true
