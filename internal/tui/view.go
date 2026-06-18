@@ -201,8 +201,10 @@ func (m Model) matrixVisibleRows() int {
 	}
 	footerH := lipgloss.Height(m.matrixFooter())
 	// header(1) + blank(1) + table chrome top/header/separator/bottom(4) +
-	// scroll status line(1) + footer.
-	avail := h - 2 - 4 - 1 - footerH
+	// scroll status line(1) + cursor detail line(1) + footer. The detail line
+	// (deprecation note / needs-suggests) is reserved unconditionally so moving
+	// the cursor onto a skill that has one never shoves a row off-screen.
+	avail := h - 2 - 4 - 1 - 1 - footerH
 	// Reserve room for the section-divider lines so one never shoves a skill
 	// row off-screen; they cost a line each on top of the data rows.
 	avail -= m.sectionBoundaries()
@@ -262,11 +264,16 @@ func (m Model) viewMatrix() string {
 		headers = append(headers, t.Name)
 	}
 
+	// A cell turns amber when it is present in its Target but its Dependency
+	// closure is unsatisfied there; computed once for the whole matrix.
+	broken := m.brokenCells()
+
 	// Build the row strings and a parallel grid of per-cell metadata that the
 	// StyleFunc closure consults for colouring.
 	type cellMeta struct {
 		st      domain.Status
 		desired bool
+		broken  bool
 	}
 	grid := make([][]cellMeta, len(visible))
 	rows := make([][]string, len(visible))
@@ -275,9 +282,10 @@ func (m Model) viewMatrix() string {
 		row[0] = skillLabel(s, nameCount[s.Name] > 1)
 		grid[vi] = make([]cellMeta, len(m.targets))
 		for ci, t := range m.targets {
+			rc := reconcile.Cell{Skill: s.Name, Source: s.Source, Target: t.Name}
 			st := m.status[statusKey{s.Name, s.Source, t.Name}]
-			des := m.desired[reconcile.Cell{Skill: s.Name, Source: s.Source, Target: t.Name}]
-			grid[vi][ci] = cellMeta{st, des}
+			des := m.desired[rc]
+			grid[vi][ci] = cellMeta{st, des, broken[rc]}
 			glyph := statusGlyph[st]
 			if glyph == "" {
 				glyph = "·"
@@ -335,6 +343,9 @@ func (m Model) viewMatrix() string {
 				return cursorStyle.Padding(0, 1).Align(lipgloss.Center)
 			}
 			s := cell.Align(lipgloss.Center).Foreground(statusStyles[meta.st].GetForeground())
+			if meta.broken {
+				s = s.Foreground(cAmber) // problem-first: closure unsatisfied here
+			}
 			if meta.desired {
 				s = s.Bold(true)
 			}
@@ -364,6 +375,10 @@ func (m Model) viewMatrix() string {
 			note += ": " + cur.DeprecationReason
 		}
 		lines = append(lines, dimStyle.Render(note))
+	}
+	// Below the deprecation note (if any): what the cursor Skill needs / suggests.
+	if detail := m.depDetail(); detail != "" {
+		lines = append(lines, detail)
 	}
 	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
 	return m.frame(header, body, footer)
