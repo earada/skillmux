@@ -439,20 +439,71 @@ func (m Model) matrixFooter() string {
 func (m Model) viewPlan() string {
 	var b strings.Builder
 	b.WriteString(headingStyle.Render("Plan") + "\n\n")
+	broken := m.brokenList()
+
 	if len(m.plan.Operations) == 0 {
 		b.WriteString(dimStyle.Render("Nothing to do — selection already matches reality."))
-		return m.frame(m.headerBar("plan"), m.panel(b.String()),
-			footerKeys(keycap{"any key", "back"}))
-	}
-	for _, op := range m.plan.Operations {
-		line := fmt.Sprintf("%-9s %s", op.Kind, describeOp(op))
-		if op.Kind == reconcile.Conflict {
-			line = errStyle.Render(line)
+	} else {
+		lines := make([]string, len(m.plan.Operations))
+		for i, op := range m.plan.Operations {
+			line := fmt.Sprintf("%-9s %s", op.Kind, describeOp(op))
+			if op.Kind == reconcile.Conflict {
+				line = errStyle.Render(line)
+			}
+			lines[i] = line
 		}
-		b.WriteString(line + "\n")
+		b.WriteString(strings.Join(lines, "\n"))
+	}
+
+	// The broken section is non-blocking: it warns that the selection leaves an
+	// unsatisfied closure, but Apply ('y') still proceeds as-is.
+	if len(broken) > 0 {
+		b.WriteString("\n\n" + m.renderBrokenSection(broken))
+	}
+
+	// Footer: 'y' applies whenever there is work; 'f' offers to add the missing
+	// closure when something is fixable; otherwise the empty plan just dismisses.
+	var caps []keycap
+	if len(m.plan.Operations) > 0 {
+		caps = append(caps, keycap{"y", "apply"})
+	}
+	if fixable(broken) {
+		caps = append(caps, keycap{"f", "fix"})
+	}
+	if len(caps) == 0 {
+		caps = append(caps, keycap{"any key", "back"})
+	} else {
+		caps = append(caps, keycap{"n", "cancel"})
 	}
 	return m.frame(m.headerBar("plan"), m.panel(strings.TrimRight(b.String(), "\n")),
-		footerKeys(keycap{"y", "apply"}, keycap{"n", "cancel"}))
+		footerKeys(caps...))
+}
+
+// renderBrokenSection renders the non-blocking "⚠ broken" list: one line per
+// present cell with an unsatisfied closure, naming the missing Skills. A
+// cross-Source resolution is annotated with the Source that supplies it; a
+// dependency no Source offers is marked unresolvable (f cannot fix it).
+func (m Model) renderBrokenSection(broken []brokenEntry) string {
+	var b strings.Builder
+	b.WriteString(brokenStyle.Render("⚠ broken") +
+		dimStyle.Render("  — these selections leave dependencies unsatisfied") + "\n")
+	for _, e := range broken {
+		needs := make([]string, len(e.Missing))
+		for i, md := range e.Missing {
+			switch {
+			case md.Source == "":
+				needs[i] = md.Name + errStyle.Render(" (unresolvable)")
+			case md.CrossSource:
+				needs[i] = md.Name + dimStyle.Render(" ("+md.Source+")")
+			default:
+				needs[i] = md.Name
+			}
+		}
+		head := brokenStyle.Render(e.Cell.Skill) +
+			dimStyle.Render(" ("+e.Cell.Source+") → "+e.Cell.Target+"  needs ")
+		b.WriteString("  " + head + strings.Join(needs, dimStyle.Render(", ")) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func describeOp(op reconcile.Operation) string {

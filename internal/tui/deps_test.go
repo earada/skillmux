@@ -148,6 +148,101 @@ func TestMarkClosureStaysConflictFree(t *testing.T) {
 	}
 }
 
+func TestBrokenListReportsMissingClosure(t *testing.T) {
+	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
+	b := engine.AvailableSkill{Name: "b", Source: "local"}
+	m := New(testEngineSkills(t, "x"))
+	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
+	m.skills = m.cat.Skills
+	m.desired[reconcile.Cell{Skill: "a", Source: "local", Target: "cc"}] = true
+
+	broken := m.brokenList()
+	if len(broken) != 1 {
+		t.Fatalf("expected 1 broken entry, got %d: %+v", len(broken), broken)
+	}
+	if broken[0].Cell.Skill != "a" || len(broken[0].Missing) != 1 || broken[0].Missing[0].Name != "b" {
+		t.Fatalf("expected a needs b, got %+v", broken[0])
+	}
+	if !fixable(broken) {
+		t.Errorf("a missing b (offered by local) should be fixable")
+	}
+}
+
+func TestViewPlanRendersBrokenSection(t *testing.T) {
+	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
+	b := engine.AvailableSkill{Name: "b", Source: "local"}
+	m := New(testEngineSkills(t, "x"))
+	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
+	m.skills = m.cat.Skills
+	m.desired[reconcile.Cell{Skill: "a", Source: "local", Target: "cc"}] = true
+	m.mode = modePlan
+
+	out := m.viewPlan()
+	for _, want := range []string{"broken", "needs", "a", "b"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("plan view missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestFixBrokenAddsMissingClosureToDesired(t *testing.T) {
+	// Plan 'f': a needs b, only a is marked → after fixBroken b is marked too and
+	// nothing is broken.
+	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
+	b := engine.AvailableSkill{Name: "b", Source: "local"}
+	m := New(testEngineSkills(t, "x"))
+	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
+	m.skills = m.cat.Skills
+	m.desired[reconcile.Cell{Skill: "a", Source: "local", Target: "cc"}] = true
+
+	m.fixBroken()
+
+	if !m.desired[reconcile.Cell{Skill: "b", Source: "local", Target: "cc"}] {
+		t.Errorf("f should have marked the missing dependency b")
+	}
+	if len(m.brokenList()) != 0 {
+		t.Errorf("nothing should be broken after fix: %+v", m.brokenList())
+	}
+}
+
+func TestPlanFKeyFixesAndRecomputes(t *testing.T) {
+	// End-to-end: open the Plan with a broken selection, press 'f', and the new
+	// dependency Install appears in the recomputed plan.
+	e := testEngine(t, "cc") // source "local" offers skill "deploy"
+	m := New(e).onRefreshed(e.Refresh())
+	// Make deploy depend on a second skill that isn't selected.
+	dep := engine.AvailableSkill{Name: "deploy", Source: "local", Refs: []string{"helper"}}
+	helper := engine.AvailableSkill{Name: "helper", Source: "local"}
+	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{dep, helper}}
+	m.skills = m.cat.Skills
+	m.desired = map[reconcile.Cell]bool{{Skill: "deploy", Source: "local", Target: "cc"}: true}
+
+	m.plan = m.eng.Plan(selected(m.desired), m.cat)
+	m.mode = modePlan
+	if len(m.brokenList()) != 1 {
+		t.Fatalf("expected a broken entry before fixing, got %+v", m.brokenList())
+	}
+
+	updated, _ := m.Update(runes("f"))
+	m = updated.(Model)
+
+	if m.mode != modePlan {
+		t.Fatalf("f should stay in the Plan, got %v", m.mode)
+	}
+	if len(m.brokenList()) != 0 {
+		t.Errorf("plan should no longer be broken after f: %+v", m.brokenList())
+	}
+	var installsHelper bool
+	for _, op := range m.plan.Operations {
+		if op.SkillName == "helper" && op.Kind == reconcile.Install {
+			installsHelper = true
+		}
+	}
+	if !installsHelper {
+		t.Errorf("recomputed plan should install the missing dependency helper: %+v", m.plan.Operations)
+	}
+}
+
 func TestDepDetailEmptyForLeafSkill(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local"}
 	m := New(testEngineSkills(t, "x"))

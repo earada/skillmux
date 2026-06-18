@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/earada/skillmux/internal/domain"
+	"github.com/earada/skillmux/internal/engine"
 	"github.com/earada/skillmux/internal/reconcile"
 )
 
@@ -39,6 +40,71 @@ func (m Model) brokenCells() map[reconcile.Cell]bool {
 // update-available).
 func (m Model) cellPresent(c reconcile.Cell, st domain.Status) bool {
 	return m.desired[c] || st == domain.StatusUpToDate || st == domain.StatusUpdateAvailable
+}
+
+// brokenEntry is one present cell whose Dependency closure is unsatisfied,
+// paired with the missing members. The Plan's "broken" section is a sorted list
+// of these.
+type brokenEntry struct {
+	Cell    reconcile.Cell
+	Missing []engine.MissingDep
+}
+
+// brokenList returns every present cell (marked or installed) whose closure is
+// unsatisfied under the current desired selection, sorted by Target then Skill
+// then Source so the Plan reads deterministically. Mirrors brokenCells' presence
+// gate so the Plan and the matrix agree on what is broken.
+func (m Model) brokenList() []brokenEntry {
+	breakages := m.eng.Breakages(m.cat, selected(m.desired))
+	var out []brokenEntry
+	for cell, missing := range breakages {
+		if len(missing) == 0 {
+			continue
+		}
+		st := m.status[statusKey{cell.Skill, cell.Source, cell.Target}]
+		if m.cellPresent(cell, st) {
+			out = append(out, brokenEntry{Cell: cell, Missing: missing})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i].Cell, out[j].Cell
+		if a.Target != b.Target {
+			return a.Target < b.Target
+		}
+		if a.Skill != b.Skill {
+			return a.Skill < b.Skill
+		}
+		return a.Source < b.Source
+	})
+	return out
+}
+
+// fixBroken is the Plan's `f` shortcut: it adds the resolvable missing closure of
+// every broken cell to the desired selection, conflict-free. A dependency no
+// Source offers (MissingDep.Source == "") cannot be installed, so it is left
+// alone — it stays in the broken section as informational.
+func (m *Model) fixBroken() {
+	for _, e := range m.brokenList() {
+		for _, md := range e.Missing {
+			if md.Source == "" {
+				continue // unresolvable: nothing to mark
+			}
+			selectCell(m.desired, reconcile.Cell{Skill: md.Name, Source: md.Source, Target: e.Cell.Target}, m.skills)
+		}
+	}
+}
+
+// fixable reports whether any broken entry has a dependency f could actually add
+// — used to decide whether to offer the `f` key.
+func fixable(broken []brokenEntry) bool {
+	for _, e := range broken {
+		for _, md := range e.Missing {
+			if md.Source != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // markClosure is the matrix `d` shortcut: it marks the Skill under the cursor

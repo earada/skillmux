@@ -341,6 +341,12 @@ func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.applying = true
 		m.mode = modeMatrix
 		return m, applyCmd(m.eng, selected(m.desired), m.cat, apply.Options{})
+	case "f":
+		// Add the resolvable missing closure to the selection and recompute the
+		// Plan in place, so the broken section shrinks and new Installs appear.
+		m.fixBroken()
+		m.plan = m.eng.Plan(selected(m.desired), m.cat)
+		return m, nil
 	case "n", "esc", "q":
 		m.mode = modeMatrix
 	}
