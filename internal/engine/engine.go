@@ -7,6 +7,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/earada/skillmux/internal/apply"
@@ -27,12 +28,56 @@ type Engine struct {
 	Fetcher      *fetch.Fetcher
 	configPath   string
 	manifestPath string
+
+	// mu guards the skill-view coordination below, which a background Refresh
+	// (running in its own goroutine) reads while the UI loop writes it.
+	mu sync.Mutex
+	// viewedSource is the Source whose files are currently being explored; a
+	// concurrent Refresh updates its objects but defers the working-tree
+	// checkout so the explorer never reads a half-rewritten tree.
+	viewedSource string
+	// deferred records Sources whose checkout a Refresh skipped because they
+	// were being viewed, so the view's close can trigger a catch-up Refresh.
+	deferred map[string]bool
 }
 
 // New builds an Engine from already-loaded state. Used directly in tests.
 // configPath may be empty when the caller will not mutate the Config.
 func New(cfg *config.Config, man *manifest.Manifest, fetcher *fetch.Fetcher, configPath, manifestPath string) *Engine {
-	return &Engine{Config: cfg, Manifest: man, Fetcher: fetcher, configPath: configPath, manifestPath: manifestPath}
+	return &Engine{
+		Config: cfg, Manifest: man, Fetcher: fetcher,
+		configPath: configPath, manifestPath: manifestPath,
+		deferred: map[string]bool{},
+	}
+}
+
+// BeginView marks source as being viewed: a concurrent Refresh will update its
+// git objects but defer the working-tree checkout. Pair every BeginView with an
+// EndView when the view closes.
+func (e *Engine) BeginView(source string) {
+	e.mu.Lock()
+	e.viewedSource = source
+	e.mu.Unlock()
+}
+
+// EndView clears the viewed Source and reports whether a Refresh deferred its
+// checkout while it was open. When true, the caller should Refresh again to
+// apply the now-safe checkout.
+func (e *Engine) EndView() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	deferred := e.deferred[e.viewedSource]
+	delete(e.deferred, e.viewedSource)
+	e.viewedSource = ""
+	return deferred
+}
+
+// ViewedSource reports the Source currently marked as being viewed (empty when
+// none). Exposed for the UI and its tests.
+func (e *Engine) ViewedSource() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.viewedSource
 }
 
 // Load wires an Engine from the on-disk Config and Manifest at their XDG paths.
@@ -108,7 +153,23 @@ func (e *Engine) Refresh() Catalog {
 		SourceErrors: map[string]error{},
 	}
 	for _, src := range e.Config.DomainSources() {
-		root, err := e.Fetcher.Fetch(src)
+		e.mu.Lock()
+		viewing := src.Name == e.viewedSource
+		e.mu.Unlock()
+
+		var root string
+		var err error
+		if viewing {
+			// A skill view is open on this Source: refresh its objects but leave
+			// the working tree alone, and remember to check it out once the view
+			// closes.
+			root, err = e.Fetcher.FetchObjectsOnly(src)
+			e.mu.Lock()
+			e.deferred[src.Name] = true
+			e.mu.Unlock()
+		} else {
+			root, err = e.Fetcher.Fetch(src)
+		}
 		if err != nil {
 			cat.SourceErrors[src.Name] = err
 			continue

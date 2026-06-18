@@ -136,7 +136,26 @@ func (m Model) enterSkillView() Model {
 	m.treeCursor, m.treeScroll = 0, 0
 	m.viewMsg = ""
 	m.mode = modeSkillTree
+	// Tell the engine this Source's files are being read, so a concurrent
+	// Refresh defers rewriting its working tree until the view closes.
+	m.eng.BeginView(sk.Source)
 	return m
+}
+
+// leaveSkillView returns to the matrix and, if a Refresh deferred this Source's
+// checkout while the view was open, kicks a catch-up Refresh to apply it now
+// that reads have stopped — serialised behind any Refresh still in flight.
+func (m Model) leaveSkillView() (tea.Model, tea.Cmd) {
+	m.mode = modeMatrix
+	if !m.eng.EndView() {
+		return m, nil
+	}
+	if m.refreshing {
+		m.pendingRefresh = true
+		return m, nil
+	}
+	m.refreshing = true
+	return m, refreshCmd(m.eng)
 }
 
 // navLen is the length of the skill view's navigable list: its outgoing edges
@@ -157,8 +176,7 @@ func (m Model) onSkillTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q":
 		return m, tea.Quit
 	case "esc":
-		m.mode = modeMatrix
-		return m, nil
+		return m.leaveSkillView()
 	case "up", "k":
 		m.treeCursor--
 	case "down", "j":

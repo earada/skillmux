@@ -48,15 +48,16 @@ type Model struct {
 	cat          engine.Catalog
 	loaded       bool
 
-	row, col   int
-	scroll     int // index of the first visible skill row (vertical scroll)
-	refreshing bool
-	applying   bool
-	mode       viewMode
-	plan       reconcile.Plan
-	collisions []engine.Collision
-	report     apply.Report
-	applyErr   error
+	row, col       int
+	scroll         int // index of the first visible skill row (vertical scroll)
+	refreshing     bool
+	pendingRefresh bool // a Refresh is wanted but one is already running; run it next
+	applying       bool
+	mode           viewMode
+	plan           reconcile.Plan
+	collisions     []engine.Collision
+	report         apply.Report
+	applyErr       error
 
 	cfgCursor int         // cursor in the config-management list
 	cfgMsg    string      // transient status line for the config view (e.g. cache cleared)
@@ -153,7 +154,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case refreshDoneMsg:
-		return m.onRefreshed(msg.cat), nil
+		m = m.onRefreshed(msg.cat)
+		if m.pendingRefresh {
+			// A Refresh was requested while this one ran (e.g. a skill view closed
+			// with a deferred checkout). Run it now that the slot is free.
+			m.pendingRefresh = false
+			m.refreshing = true
+			return m, refreshCmd(m.eng)
+		}
+		return m, nil
 
 	case fileRenderedMsg:
 		return m.onFileRendered(msg), nil

@@ -156,6 +156,32 @@ func TestRefreshCapturesSourceErrors(t *testing.T) {
 	}
 }
 
+func TestViewDeferralBookkeeping(t *testing.T) {
+	e := New(&config.Config{}, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: t.TempDir()}, "", "")
+
+	// Opening a view marks the source; closing it clears the mark.
+	e.BeginView("remote")
+	if e.ViewedSource() != "remote" {
+		t.Fatalf("ViewedSource = %q, want %q", e.ViewedSource(), "remote")
+	}
+	if e.EndView() {
+		t.Error("EndView should be false when no checkout was deferred")
+	}
+	if e.ViewedSource() != "" {
+		t.Errorf("ViewedSource not cleared: %q", e.ViewedSource())
+	}
+
+	// When a Refresh deferred the checkout, EndView reports it once, then clears.
+	e.BeginView("remote")
+	e.deferred["remote"] = true // a Refresh would set this while the view is open
+	if !e.EndView() {
+		t.Error("EndView should report the deferred checkout")
+	}
+	if e.EndView() {
+		t.Error("the deferred flag should have been cleared after the first EndView")
+	}
+}
+
 func statusOf(e *Engine, cat Catalog, skill, target string) domain.Status {
 	for _, c := range e.Status(cat) {
 		if c.SkillName == skill && c.TargetName == target {

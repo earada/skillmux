@@ -237,6 +237,33 @@ func TestSkillViewStaleRenderIgnored(t *testing.T) {
 	}
 }
 
+func TestSkillViewMarksAndClearsViewedSource(t *testing.T) {
+	e := testEngineSkills(t, "deploy")
+	m := New(e).onRefreshed(e.Refresh())
+
+	m = applyKeys(m, runes("v"))
+	if e.ViewedSource() != "local" {
+		t.Errorf("entering the skill view should mark the source viewed, got %q", e.ViewedSource())
+	}
+	// Opening a file keeps the source marked (still reading its tree).
+	enter, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = enter.(Model)
+	if e.ViewedSource() != "local" {
+		t.Errorf("viewing a file should keep the source marked, got %q", e.ViewedSource())
+	}
+	// esc: file -> tree (still viewing), then tree -> matrix (clears the mark).
+	esc1, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = esc1.(Model)
+	if e.ViewedSource() != "local" {
+		t.Errorf("leaving the file (back to tree) should keep the source marked, got %q", e.ViewedSource())
+	}
+	esc2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_ = esc2
+	if e.ViewedSource() != "" {
+		t.Errorf("leaving the skill view should clear the viewed source, got %q", e.ViewedSource())
+	}
+}
+
 func TestSkillViewShowsRevision(t *testing.T) {
 	e := testEngineSkills(t, "deploy")
 	m := New(e).onRefreshed(e.Refresh())

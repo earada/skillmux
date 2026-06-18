@@ -31,14 +31,28 @@ type Fetcher struct {
 }
 
 // Fetch returns the local directory holding the Source's Skills, with Subpath
-// applied. For GitHub Sources it clones (or updates) the repository under the
-// cache; for local Sources it resolves the path.
+// applied. For GitHub Sources it clones (or updates: fetch + checkout) the
+// repository under the cache; for local Sources it resolves the path.
 func (f *Fetcher) Fetch(src domain.Source) (string, error) {
+	return f.resolve(src, false)
+}
+
+// FetchObjectsOnly updates a GitHub Source's git objects without touching its
+// working tree (git fetch, no reset) — used to refresh a Source whose files are
+// being viewed, deferring the checkout until the view closes so the file
+// explorer never reads a half-rewritten tree. A Source with no existing clone is
+// cloned normally (there is no working tree to protect yet); a local Source
+// behaves exactly like Fetch.
+func (f *Fetcher) FetchObjectsOnly(src domain.Source) (string, error) {
+	return f.resolve(src, true)
+}
+
+func (f *Fetcher) resolve(src domain.Source, skipCheckout bool) (string, error) {
 	switch src.Kind {
 	case domain.SourceLocal:
 		return f.fetchLocal(src)
 	case domain.SourceGitHub:
-		return f.fetchGitHub(src)
+		return f.fetchGitHub(src, skipCheckout)
 	default:
 		return "", fmt.Errorf("source %q: unknown kind %q", src.Name, src.Kind)
 	}
@@ -59,7 +73,7 @@ func (f *Fetcher) fetchLocal(src domain.Source) (string, error) {
 // fetchGitHub clones the Source on first use and updates it (fetch + reset) on
 // every subsequent Fetch, leaving a shallow checkout of the requested ref under
 // the cache. The returned directory is that checkout with Subpath applied.
-func (f *Fetcher) fetchGitHub(src domain.Source) (string, error) {
+func (f *Fetcher) fetchGitHub(src domain.Source, skipCheckout bool) (string, error) {
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", fmt.Errorf("source %q: skillmux requires git on PATH to fetch GitHub Sources — install git, or use a local Source", src.Name)
 	}
@@ -71,7 +85,7 @@ func (f *Fetcher) fetchGitHub(src domain.Source) (string, error) {
 
 	dest := f.CacheDirFor(src)
 	if isGitRepo(dest) {
-		if err := updateClone(dest, src.Branch); err != nil {
+		if err := updateClone(dest, src.Branch, skipCheckout); err != nil {
 			return "", fmt.Errorf("source %q: %w", src.Name, err)
 		}
 	} else {
@@ -101,16 +115,21 @@ func freshClone(repoURL, dest, ref string) error {
 }
 
 // updateClone brings an existing clone up to the requested ref by fetching it
-// shallowly and hard-resetting the working tree to it. An empty ref tracks the
-// remote's default branch (HEAD). Fetching an explicit ref works regardless of
-// the clone's configured refspec, so this also handles a changed Branch.
-func updateClone(dest, ref string) error {
+// shallowly and (unless skipCheckout) hard-resetting the working tree to it. An
+// empty ref tracks the remote's default branch (HEAD). Fetching an explicit ref
+// works regardless of the clone's configured refspec, so this also handles a
+// changed Branch. With skipCheckout the objects are updated but the working tree
+// is left untouched, so a later checkout can apply the update when it is safe.
+func updateClone(dest, ref string, skipCheckout bool) error {
 	fetchRef := ref
 	if fetchRef == "" {
 		fetchRef = "HEAD"
 	}
 	if _, err := runGit(dest, "fetch", "--depth", "1", "origin", fetchRef); err != nil {
 		return err
+	}
+	if skipCheckout {
+		return nil
 	}
 	if _, err := runGit(dest, "reset", "--hard", "FETCH_HEAD"); err != nil {
 		return err

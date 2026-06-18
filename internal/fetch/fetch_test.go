@@ -189,6 +189,41 @@ func TestOwnerRepo(t *testing.T) {
 	}
 }
 
+func TestFetchObjectsOnlyLeavesWorkingTree(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t, map[string]string{"SKILL.md": "v1"})
+	f := &Fetcher{CacheDir: t.TempDir()}
+	src := domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: repo}
+
+	dir, err := f.Fetch(src) // initial clone
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	// Advance the source.
+	writeFile(t, repo, "SKILL.md", "v2")
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-m", "v2")
+
+	// FetchObjectsOnly must NOT rewrite the working tree.
+	if _, err := f.FetchObjectsOnly(src); err != nil {
+		t.Fatalf("FetchObjectsOnly: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if string(got) != "v1" {
+		t.Errorf("FetchObjectsOnly changed the working tree: SKILL.md = %q, want %q", got, "v1")
+	}
+
+	// A subsequent full Fetch applies the deferred checkout.
+	if _, err := f.Fetch(src); err != nil {
+		t.Fatalf("Fetch (checkout): %v", err)
+	}
+	got, _ = os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if string(got) != "v2" {
+		t.Errorf("Fetch should have checked out v2; SKILL.md = %q", got)
+	}
+}
+
 func TestRevisionReportsRefAndSHA(t *testing.T) {
 	requireGit(t)
 	repo := initRepo(t, map[string]string{"SKILL.md": "x"})
