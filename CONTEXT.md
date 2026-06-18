@@ -12,6 +12,10 @@ _Avoid_: package, plugin, command
 An origin that holds one or more Skills — either a GitHub URL (public, or private when a credential is available) or a local folder. A Source may contain N Skills (each subfolder with a `SKILL.md` is one Skill); the user picks which to install.
 _Avoid_: repo (when ambiguous), registry
 
+**Revision**:
+The exact point in a GitHub Source's history that its local clone currently sits at — surfaced as `ref @ shortSHA` (e.g. `main @ a1b2c3d`). A per-Source fact: every Skill from one clone shares the Source's Revision. Purely informational — it tells the user *what they have*, and is distinct from Update available, which compares per-Skill content fingerprints, not Revisions. Local Sources have no Revision.
+_Avoid_: version, commit (in field name), tag
+
 **Group**:
 The folder hierarchy a Skill sits under within its Source, derived from where its `SKILL.md` lives (the parent directories, slash-joined). Purely organisational — it is not part of the Skill's identity and does not affect the install folder — but Skillmux surfaces it as a dimmed hint trailing the Skill name in the matrix (`strict-mode  typescript`, name first so the eye lands on identity) and lets the user filter by it. A Skill at the Source root has no Group.
 _Avoid_: category, namespace, package

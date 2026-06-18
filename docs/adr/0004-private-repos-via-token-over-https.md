@@ -1,4 +1,13 @@
+---
+status: superseded by ADR-0006
+---
+
 # Private GitHub repos via token over HTTPS, not git
+
+> **Superseded by [ADR 0006](./0006-fetch-github-sources-via-git-clone.md).**
+> Skillmux now clones with `git` and defers auth to git's own credential
+> resolution; the tarball-over-HTTPS path and ambient-token handling described
+> below have been removed. Kept for historical context.
 
 To support private Sources we keep the existing "download a tarball over HTTPS, no `git` dependency" architecture and add an ambient credential rather than shelling out to `git clone` / SSH. When a token is available, Skillmux fetches `https://api.github.com/repos/{owner}/{repo}/tarball/{ref}` with an `Authorization: Bearer` header (the API redirects to a signed `codeload` URL that Go follows); when no token is available it stays on the anonymous `codeload.github.com` path exactly as before. The token is resolved ambiently — `GH_TOKEN` → `GITHUB_TOKEN` → `gh auth token` — never stored in the Config, never written to disk, and never echoed in logs or errors.
 
