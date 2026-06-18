@@ -41,6 +41,26 @@ func (m Model) cellPresent(c reconcile.Cell, st domain.Status) bool {
 	return m.desired[c] || st == domain.StatusUpToDate || st == domain.StatusUpdateAvailable
 }
 
+// markClosure is the matrix `d` shortcut: it marks the Skill under the cursor
+// and its full transitive Dependency closure in the cursor cell's Target, so one
+// keystroke cures the amber. Each cell is marked conflict-free (selectCell drops
+// any rival Source of the same name), and the closure resolves each dependency
+// to a concrete Source preferring the depending Skill's own. A dependency no
+// Source offers is silently skipped — it cannot be installed, so there is
+// nothing to mark.
+func (m *Model) markClosure() {
+	sk, ok := m.curSkill()
+	if !ok || m.col < 0 || m.col >= len(m.targets) {
+		return
+	}
+	target := m.targets[m.col].Name
+	selectCell(m.desired, reconcile.Cell{Skill: sk.Name, Source: sk.Source, Target: target}, m.skills)
+	g := m.eng.DependencyGraph(m.cat)
+	for _, c := range g.ClosureCells(sk.Name, sk.Source, target) {
+		selectCell(m.desired, c, m.skills)
+	}
+}
+
 // depDetail renders the cursor row's dependency detail line: a `needs:` list of
 // the Skill's direct Dependency edges, each amber when it is unsatisfied in the
 // cursor's Target (matching the matrix), and a `suggests:` list of its

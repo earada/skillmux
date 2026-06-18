@@ -79,6 +79,75 @@ func TestDepDetailFlagsCrossSource(t *testing.T) {
 	}
 }
 
+func TestMarkClosureMarksSkillAndTransitiveDeps(t *testing.T) {
+	// a → b → c: pressing 'd' on a should mark a, b and c in the cursor Target,
+	// curing the amber in one keystroke.
+	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
+	b := engine.AvailableSkill{Name: "b", Source: "local", Refs: []string{"c"}}
+	c := engine.AvailableSkill{Name: "c", Source: "local"}
+	m := New(testEngineSkills(t, "x"))
+	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b, c}}
+	m.skills = m.cat.Skills
+	m.targets = m.eng.Config.DomainTargets()
+	m.row, m.col = 0, 0 // cursor on "a", target "cc"
+
+	m.markClosure()
+
+	for _, name := range []string{"a", "b", "c"} {
+		cell := reconcile.Cell{Skill: name, Source: "local", Target: "cc"}
+		if !m.desired[cell] {
+			t.Errorf("expected %s to be marked in cc after pressing d", name)
+		}
+	}
+	// And the cell is no longer broken.
+	if m.brokenCells()[reconcile.Cell{Skill: "a", Source: "local", Target: "cc"}] {
+		t.Errorf("a should be satisfied after its closure is marked")
+	}
+}
+
+func TestMatrixDKeyMarksClosure(t *testing.T) {
+	// End-to-end through Update: the 'd' keypress mutates the shared desired map
+	// despite Update's value receiver.
+	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
+	b := engine.AvailableSkill{Name: "b", Source: "local"}
+	m := New(testEngineSkills(t, "x"))
+	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
+	m.skills = m.cat.Skills
+	m.row, m.col = 0, 0
+
+	updated, _ := m.Update(runes("d"))
+	m = updated.(Model)
+
+	if !m.desired[reconcile.Cell{Skill: "b", Source: "local", Target: "cc"}] {
+		t.Errorf("pressing d should have marked dependency b")
+	}
+}
+
+func TestMarkClosureStaysConflictFree(t *testing.T) {
+	// b is offered by two Sources; marking a's closure must pick one and clear
+	// the rival so the selection never holds two Sources for the same name.
+	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
+	b1 := engine.AvailableSkill{Name: "b", Source: "local"}
+	b2 := engine.AvailableSkill{Name: "b", Source: "other"}
+	m := New(testEngineSkills(t, "x"))
+	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b1, b2}}
+	m.skills = m.cat.Skills
+	m.targets = m.eng.Config.DomainTargets()
+	m.row, m.col = 0, 0
+
+	m.markClosure()
+
+	local := m.desired[reconcile.Cell{Skill: "b", Source: "local", Target: "cc"}]
+	other := m.desired[reconcile.Cell{Skill: "b", Source: "other", Target: "cc"}]
+	if local == other {
+		t.Errorf("exactly one Source of b should be marked, got local=%v other=%v", local, other)
+	}
+	// Resolution prefers a's own Source (local).
+	if !local {
+		t.Errorf("closure should prefer the depending Skill's own Source for b")
+	}
+}
+
 func TestDepDetailEmptyForLeafSkill(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local"}
 	m := New(testEngineSkills(t, "x"))

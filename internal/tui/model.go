@@ -271,6 +271,8 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if sk, ok := m.curSkill(); ok {
 			setRow(m.desired, sk.Name, sk.Source, m.targets, m.skills, false)
 		}
+	case "d":
+		m.markClosure()
 	case "r":
 		if !m.refreshing {
 			m.refreshing = true

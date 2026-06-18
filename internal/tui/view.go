@@ -422,6 +422,7 @@ func (m Model) matrixFooter() string {
 		keycap{"space", "toggle"},
 		keycap{"a", "all"},
 		keycap{"n", "none"},
+		keycap{"d", "+deps"},
 		keycap{"/", "filter"},
 		keycap{"v", "view"},
 		keycap{"r", "refresh"},
