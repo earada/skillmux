@@ -713,7 +713,11 @@ func (m Model) skillTreeFooter() string {
 
 func (m Model) viewFileView() string {
 	crumb := skillNameStyle.Render(m.viewSkill.Name) + dimStyle.Render(" / "+m.openPath)
-	body := crumb + "\n" + m.fileVP.View()
+	inner := m.fileVP.View()
+	if m.fileLoading {
+		inner = dimStyle.Render("loading…")
+	}
+	body := crumb + "\n" + inner
 	return m.frame(m.headerBar("view"), body, m.fileFooter())
 }
 

@@ -75,6 +75,7 @@ type Model struct {
 	treeScroll  int                   // first visible file row (vertical scroll)
 	viewMsg     string                // transient note for the skill view (e.g. toggled)
 	openPath    string                // relative path of the open file (breadcrumb)
+	fileLoading bool                  // true while the open file reads+renders off-loop
 	fileContent fileContent           // the classified open file
 	fileVP      viewport.Model        // scroll container for the open file
 
@@ -153,6 +154,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case refreshDoneMsg:
 		return m.onRefreshed(msg.cat), nil
+
+	case fileRenderedMsg:
+		return m.onFileRendered(msg), nil
 
 	case applyDoneMsg:
 		m.applying = false

@@ -18,9 +18,9 @@ import (
 )
 
 // maxFileSize caps how large a file modeFileView will read into memory. Skill
-// files are tiny in practice; this guards the synchronous read+render path from
-// freezing the UI on a pathologically large text file (a binary of any size is
-// caught earlier by the binary check). See ADR-less design note in CONTEXT.
+// files are tiny in practice; this bounds the off-loop read+render (see
+// renderFileCmd) so a pathologically large text file can't exhaust memory (a
+// binary of any size is caught earlier by the binary check).
 const maxFileSize = 1 << 20 // 1 MiB
 
 // treeLine is one row of a Skill's recursive file tree: its display name, how
@@ -205,15 +205,55 @@ func (m Model) toggleEdge() Model {
 	return m
 }
 
-// openFile classifies the file at relPath within the current Skill and switches
-// to the scrollable file viewer.
+// fileRenderedMsg carries the result of an off-loop file read+render back to the
+// Update loop. path is the relative path the render was for, so a result for a
+// file the user has already navigated away from can be discarded.
+type fileRenderedMsg struct {
+	path    string
+	content fileContent
+	body    string
+}
+
+// openFile switches to the file viewer and kicks off an off-loop read+render of
+// the file at relPath. The view shows a loading note until the fileRenderedMsg
+// lands, so a slow glamour render never freezes the matrix.
 func (m Model) openFile(relPath string) (tea.Model, tea.Cmd) {
 	path := filepath.Join(m.viewSkill.Dir, filepath.FromSlash(relPath))
+	w, _ := m.fileViewerSize()
 	m.openPath = relPath
-	m.fileContent = classifyFile(path)
-	m.fileVP = m.newFileViewport()
+	m.fileLoading = true
+	m.fileContent = fileContent{}
+	m.fileVP = viewport.Model{}
 	m.mode = modeFileView
-	return m, nil
+	return m, renderFileCmd(path, relPath, w)
+}
+
+// renderFileCmd reads and renders a file in a goroutine, posting the result as a
+// fileRenderedMsg. classifyFile and the glamour markdown render (the expensive
+// step) run here, off the UI loop — this is what keeps the file view responsive.
+func renderFileCmd(path, relPath string, width int) tea.Cmd {
+	return func() tea.Msg {
+		fc := classifyFile(path)
+		return fileRenderedMsg{path: relPath, content: fc, body: renderBody(fc, width)}
+	}
+}
+
+// onFileRendered installs a completed off-loop render, discarding a stale result
+// for a file the user has already left (esc'd back, or opened another file).
+func (m Model) onFileRendered(msg fileRenderedMsg) Model {
+	if m.mode != modeFileView || msg.path != m.openPath {
+		return m
+	}
+	m.fileLoading = false
+	m.fileContent = msg.content
+	w, h := m.fileViewerSize()
+	if h <= 0 {
+		h = 1 // viewport needs a positive height even in unbounded mode
+	}
+	vp := viewport.New(w, h)
+	vp.SetContent(msg.body)
+	m.fileVP = vp
+	return m
 }
 
 func (m Model) onFileViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -351,37 +391,26 @@ func (m Model) fileViewerSize() (w, h int) {
 	return w, h
 }
 
-// newFileViewport builds the viewport for the open file, rendering markdown
-// through glamour and showing a one-line note for binary / oversized / errored
-// files instead of their bytes.
-func (m Model) newFileViewport() viewport.Model {
-	w, h := m.fileViewerSize()
-	if h <= 0 {
-		h = 1 // viewport needs a positive height even in unbounded mode
-	}
-	vp := viewport.New(w, h)
-	vp.SetContent(m.fileBody(w))
-	return vp
-}
-
-// fileBody is the text the file viewport scrolls: rendered markdown for a .md
-// file, raw text for any other text file, or a descriptive note otherwise.
-func (m Model) fileBody(width int) string {
-	switch m.fileContent.kind {
+// renderBody is the text the file viewport scrolls: rendered markdown for a .md
+// file, raw text for any other text file, or a descriptive note otherwise. The
+// glamour render is the expensive step, so renderBody is called off the UI loop
+// (see renderFileCmd), never from the synchronous Update path.
+func renderBody(fc fileContent, width int) string {
+	switch fc.kind {
 	case fileBinary:
-		return dimStyle.Render(fmt.Sprintf("(binary, %d bytes)", m.fileContent.size))
+		return dimStyle.Render(fmt.Sprintf("(binary, %d bytes)", fc.size))
 	case fileTooLarge:
-		return dimStyle.Render(fmt.Sprintf("(file too large, %d bytes)", m.fileContent.size))
+		return dimStyle.Render(fmt.Sprintf("(file too large, %d bytes)", fc.size))
 	case fileError:
-		return errStyle.Render("(could not read: " + m.fileContent.err.Error() + ")")
+		return errStyle.Render("(could not read: " + fc.err.Error() + ")")
 	default:
-		if m.fileContent.isMarkdown {
-			if out, err := renderMarkdown(m.fileContent.text, width); err == nil {
+		if fc.isMarkdown {
+			if out, err := renderMarkdown(fc.text, width); err == nil {
 				return out
 			}
 			// Fall back to raw text if glamour fails for any reason.
 		}
-		return m.fileContent.text
+		return fc.text
 	}
 }
 

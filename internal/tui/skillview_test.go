@@ -127,11 +127,21 @@ func TestSkillViewOpenFileAndCascadeBack(t *testing.T) {
 	m := New(e).onRefreshed(e.Refresh())
 	m = applyKeys(m, runes("v"))
 
-	// The tree has a single SKILL.md; cursor is on it, enter opens it.
-	enter, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// The tree has a single SKILL.md; cursor is on it, enter opens it. The file
+	// is read+rendered off the loop, so enter switches to a loading file view…
+	enter, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = enter.(Model)
 	if m.mode != modeFileView {
 		t.Fatalf("enter on a file should open modeFileView, got %v", m.mode)
+	}
+	if !m.fileLoading || cmd == nil {
+		t.Fatalf("enter on a file should start an off-loop render: loading=%v cmd=%v", m.fileLoading, cmd != nil)
+	}
+	// …and the render result lands as a fileRenderedMsg.
+	done, _ := m.Update(cmd())
+	m = done.(Model)
+	if m.fileLoading {
+		t.Fatal("file view should no longer be loading after the render lands")
 	}
 	if m.openPath != "SKILL.md" || m.fileContent.kind != fileText {
 		t.Fatalf("expected SKILL.md text open, got path=%q kind=%v", m.openPath, m.fileContent.kind)
@@ -188,9 +198,40 @@ func TestSkillViewRendersWithoutPanic(t *testing.T) {
 	if m.View() == "" {
 		t.Fatal("empty tree view")
 	}
-	enter, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if enter.(Model).View() == "" {
-		t.Fatal("empty file view")
+	enter, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = enter.(Model)
+	if m.View() == "" {
+		t.Fatal("empty file view (loading)")
+	}
+	// The rendered file view is also non-empty once the off-loop render lands.
+	done, _ := m.Update(cmd())
+	if done.(Model).View() == "" {
+		t.Fatal("empty file view (rendered)")
+	}
+}
+
+// A render that completes after the user has left the file view must be
+// ignored, not applied on top of whatever screen they navigated to.
+func TestSkillViewStaleRenderIgnored(t *testing.T) {
+	e := testEngineSkills(t, "deploy")
+	m := New(e).onRefreshed(e.Refresh())
+	m = applyKeys(m, runes("v"))
+
+	enter, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = enter.(Model)
+	if m.mode != modeFileView {
+		t.Fatalf("expected modeFileView, got %v", m.mode)
+	}
+	// Leave the file view before the render lands.
+	esc, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = esc.(Model)
+	if m.mode != modeSkillTree {
+		t.Fatalf("expected modeSkillTree after esc, got %v", m.mode)
+	}
+	// The late render must not yank us back into the file view.
+	late, _ := m.Update(cmd())
+	if late.(Model).mode != modeSkillTree {
+		t.Fatalf("stale render should be ignored; mode = %v", late.(Model).mode)
 	}
 }
 
