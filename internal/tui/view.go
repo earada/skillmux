@@ -26,6 +26,10 @@ func (m Model) View() string {
 		return m.viewConfig()
 	case modeForm:
 		return m.viewForm()
+	case modeSkillTree:
+		return m.viewSkillTree()
+	case modeFileView:
+		return m.viewFileView()
 	default:
 		return m.viewMatrix()
 	}
@@ -404,6 +408,7 @@ func (m Model) matrixFooter() string {
 		keycap{"a", "all"},
 		keycap{"n", "none"},
 		keycap{"/", "filter"},
+		keycap{"v", "view"},
 		keycap{"r", "refresh"},
 		keycap{"p", "plan"},
 		keycap{"c", "config"},
@@ -540,6 +545,75 @@ func (m Model) viewForm() string {
 	}
 	return m.frame(m.headerBar("config"), m.panel(strings.TrimRight(b.String(), "\n")),
 		footerKeys(keycap{"tab", "next"}, keycap{"enter", "save"}, keycap{"esc", "cancel"}))
+}
+
+// --- skill view (tree / file) -------------------------------------------
+
+func (m Model) viewSkillTree() string {
+	header := m.headerBar("view")
+	footer := m.skillTreeFooter()
+
+	lines := append([]string(nil), m.treeMetaLines()...)
+	w, _ := m.dims()
+	lines = append(lines, dimStyle.Render(strings.Repeat("─", max(0, w-2))))
+
+	switch {
+	case !m.treeOK:
+		lines = append(lines, dimStyle.Render("(files unavailable — not downloaded yet)"))
+	case len(m.viewTree) == 0:
+		lines = append(lines, dimStyle.Render("(empty)"))
+	default:
+		vis := m.treeVisibleRows()
+		end := min(m.treeScroll+vis, len(m.viewTree))
+		for i := m.treeScroll; i < end; i++ {
+			lines = append(lines, m.treeRow(m.viewTree[i], i == m.treeCursor))
+		}
+		if vis < len(m.viewTree) {
+			lines = append(lines, dimStyle.Render(fmt.Sprintf("showing %d–%d of %d  ↑↓ to scroll",
+				m.treeScroll+1, end, len(m.viewTree))))
+		}
+	}
+	return m.frame(header, lipgloss.JoinVertical(lipgloss.Left, lines...), footer)
+}
+
+// treeRow renders one file-tree line: indented by depth, directories suffixed
+// with "/", the cursor row highlighted.
+func (m Model) treeRow(t treeLine, cursor bool) string {
+	name := t.name
+	if t.isDir {
+		name += "/"
+	}
+	label := strings.Repeat("  ", t.depth) + name
+	if cursor {
+		return cursorStyle.Render(" " + label + " ")
+	}
+	if t.isDir {
+		return dimStyle.Render("  " + label)
+	}
+	return "  " + label
+}
+
+func (m Model) skillTreeFooter() string {
+	return footerKeys(
+		keycap{"↑↓", "move"},
+		keycap{"enter", "open"},
+		keycap{"esc", "back"},
+		keycap{"q", "quit"},
+	)
+}
+
+func (m Model) viewFileView() string {
+	crumb := skillNameStyle.Render(m.viewSkill.Name) + dimStyle.Render(" / "+m.openPath)
+	body := crumb + "\n" + m.fileVP.View()
+	return m.frame(m.headerBar("view"), body, m.fileFooter())
+}
+
+func (m Model) fileFooter() string {
+	return footerKeys(
+		keycap{"↑↓", "scroll"},
+		keycap{"esc", "back"},
+		keycap{"q", "quit"},
+	)
 }
 
 // pad right-pads s to width w (ANSI-aware).

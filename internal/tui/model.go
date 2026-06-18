@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/earada/skillmux/internal/apply"
@@ -25,6 +26,8 @@ const (
 	modeResult
 	modeConfig
 	modeForm
+	modeSkillTree // read-only explorer: metadata + file tree of a Skill
+	modeFileView  // scrollable viewer for one file within a Skill
 )
 
 type statusKey struct{ skill, source, target string }
@@ -62,6 +65,16 @@ type Model struct {
 	search    textinput.Model // the "/" search line
 	searching bool            // true while the search line is capturing input
 	filter    string          // active filter query; rows() narrows to matches
+
+	// Skill-view state (modeSkillTree / modeFileView).
+	viewSkill   engine.AvailableSkill // the Skill being explored
+	viewTree    []treeLine            // its recursive file tree
+	treeOK      bool                  // false when the folder is missing on disk
+	treeCursor  int                   // cursor within viewTree
+	treeScroll  int                   // first visible tree row (vertical scroll)
+	openPath    string                // relative path of the open file (breadcrumb)
+	fileContent fileContent           // the classified open file
+	fileVP      viewport.Model        // scroll container for the open file
 
 	width, height int
 }
@@ -206,6 +219,10 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.onConfigKey(msg)
 	case modeForm:
 		return m.onFormKey(msg)
+	case modeSkillTree:
+		return m.onSkillTreeKey(msg)
+	case modeFileView:
+		return m.onFileViewKey(msg)
 	default:
 		return m.onMatrixKey(msg)
 	}
@@ -263,6 +280,8 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cfgCursor = 0
 		m.cfgMsg = ""
 		m.mode = modeConfig
+	case "v":
+		return m.enterSkillView(), nil
 	case "p", "enter":
 		m.plan = m.eng.Plan(selected(m.desired), m.cat)
 		m.mode = modePlan
