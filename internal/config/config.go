@@ -15,10 +15,22 @@ import (
 	"github.com/earada/skillmux/internal/domain"
 )
 
-// Config is the on-disk shape of the user's declared Targets and Sources.
+// Config is the on-disk shape of the user's declared Targets and Sources, plus
+// any manual Suggestion reclassifications.
 type Config struct {
-	Targets []TargetEntry `toml:"target"`
-	Sources []SourceEntry `toml:"source"`
+	Targets     []TargetEntry     `toml:"target"`
+	Sources     []SourceEntry     `toml:"source"`
+	Suggestions []SuggestionEntry `toml:"suggestion,omitempty"`
+}
+
+// SuggestionEntry downgrades an inferred Dependency edge to a Suggestion: the
+// edge from Skill From to Skill To is advisory, not a hard requirement, so
+// Skillmux must not warn on it. To may be empty, which marks every outgoing edge
+// of From a Suggestion — the bulk form for a router Skill like `ask-matt`.
+// Skills are named by identity (the SKILL.md `name`), not qualified by Source.
+type SuggestionEntry struct {
+	From string `toml:"from"`
+	To   string `toml:"to,omitempty"`
 }
 
 // TargetEntry is one configured Target.
@@ -96,7 +108,62 @@ func (c *Config) validate() error {
 		}
 		seenS[s.Name] = true
 	}
+	for _, sg := range c.Suggestions {
+		if sg.From == "" {
+			return errors.New("suggestion: from is required")
+		}
+	}
 	return nil
+}
+
+// IsSuggestion reports whether the edge from→to has been manually reclassified
+// as a Suggestion: matched by an exact From/To pair, or by a bulk entry (To
+// empty) that downgrades every outgoing edge of From.
+func (c *Config) IsSuggestion(from, to string) bool {
+	for _, sg := range c.Suggestions {
+		if sg.From != from {
+			continue
+		}
+		if sg.To == "" || sg.To == to {
+			return true
+		}
+	}
+	return false
+}
+
+// AddSuggestion records the edge from→to as a Suggestion. It is a no-op when the
+// edge is already a Suggestion (including via a bulk From entry).
+func (c *Config) AddSuggestion(from, to string) {
+	if c.IsSuggestion(from, to) {
+		return
+	}
+	c.Suggestions = append(c.Suggestions, SuggestionEntry{From: from, To: to})
+}
+
+// RemoveSuggestion drops the exact from→to pair, restoring it to a Dependency.
+// It does not split a bulk From entry (To empty): a router-wide downgrade is
+// removed only by deleting that entry, so the caller should check
+// HasBulkSuggestion before offering a per-edge toggle.
+func (c *Config) RemoveSuggestion(from, to string) {
+	kept := c.Suggestions[:0]
+	for _, sg := range c.Suggestions {
+		if sg.From == from && sg.To == to {
+			continue
+		}
+		kept = append(kept, sg)
+	}
+	c.Suggestions = kept
+}
+
+// HasBulkSuggestion reports whether From's outgoing edges are downgraded
+// wholesale by a bulk entry (To empty), which a per-edge toggle cannot undo.
+func (c *Config) HasBulkSuggestion(from string) bool {
+	for _, sg := range c.Suggestions {
+		if sg.From == from && sg.To == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // DomainTargets returns the configured Targets as domain values.

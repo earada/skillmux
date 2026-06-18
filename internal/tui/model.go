@@ -68,10 +68,12 @@ type Model struct {
 
 	// Skill-view state (modeSkillTree / modeFileView).
 	viewSkill   engine.AvailableSkill // the Skill being explored
+	viewEdges   []skillEdge           // its outgoing Dependency / Suggestion edges
 	viewTree    []treeLine            // its recursive file tree
 	treeOK      bool                  // false when the folder is missing on disk
-	treeCursor  int                   // cursor within viewTree
-	treeScroll  int                   // first visible tree row (vertical scroll)
+	treeCursor  int                   // cursor over the edges-then-files nav list
+	treeScroll  int                   // first visible file row (vertical scroll)
+	viewMsg     string                // transient note for the skill view (e.g. toggled)
 	openPath    string                // relative path of the open file (breadcrumb)
 	fileContent fileContent           // the classified open file
 	fileVP      viewport.Model        // scroll container for the open file
@@ -271,6 +273,8 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if sk, ok := m.curSkill(); ok {
 			setRow(m.desired, sk.Name, sk.Source, m.targets, m.skills, false)
 		}
+	case "d":
+		m.markClosure()
 	case "r":
 		if !m.refreshing {
 			m.refreshing = true
@@ -339,6 +343,12 @@ func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.applying = true
 		m.mode = modeMatrix
 		return m, applyCmd(m.eng, selected(m.desired), m.cat, apply.Options{})
+	case "f":
+		// Add the resolvable missing closure to the selection and recompute the
+		// Plan in place, so the broken section shrinks and new Installs appear.
+		m.fixBroken()
+		m.plan = m.eng.Plan(selected(m.desired), m.cat)
+		return m, nil
 	case "n", "esc", "q":
 		m.mode = modeMatrix
 	}

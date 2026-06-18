@@ -70,3 +70,67 @@ func TestValidateRejectsDuplicatesAndEmpties(t *testing.T) {
 		}
 	}
 }
+
+func TestSuggestionRoundTripAndQuery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	c := &Config{
+		Targets: []TargetEntry{{Name: "claude-code", Path: "~/.claude/skills"}},
+		Suggestions: []SuggestionEntry{
+			{From: "review", To: "setup-matt-pocock-skills"}, // specific pair
+			{From: "ask-matt"},                               // bulk: all outgoing edges
+		},
+	}
+	if err := Save(path, c); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got.Suggestions) != 2 {
+		t.Fatalf("expected 2 suggestions, got %+v", got.Suggestions)
+	}
+	// Specific pair: only that exact edge is a Suggestion.
+	if !got.IsSuggestion("review", "setup-matt-pocock-skills") {
+		t.Error("review→setup-matt-pocock-skills should be a Suggestion")
+	}
+	if got.IsSuggestion("review", "tdd") {
+		t.Error("review→tdd should NOT be a Suggestion")
+	}
+	// Bulk: every outgoing edge of ask-matt is a Suggestion.
+	if !got.IsSuggestion("ask-matt", "tdd") || !got.IsSuggestion("ask-matt", "prototype") {
+		t.Error("all ask-matt edges should be Suggestions via the bulk entry")
+	}
+	if !got.HasBulkSuggestion("ask-matt") || got.HasBulkSuggestion("review") {
+		t.Error("HasBulkSuggestion mismatch")
+	}
+}
+
+func TestAddRemoveSuggestion(t *testing.T) {
+	c := &Config{}
+	c.AddSuggestion("review", "setup-matt-pocock-skills")
+	c.AddSuggestion("review", "setup-matt-pocock-skills") // idempotent
+	if len(c.Suggestions) != 1 {
+		t.Fatalf("AddSuggestion not idempotent: %+v", c.Suggestions)
+	}
+	if !c.IsSuggestion("review", "setup-matt-pocock-skills") {
+		t.Error("edge should be a Suggestion after AddSuggestion")
+	}
+	c.RemoveSuggestion("review", "setup-matt-pocock-skills")
+	if c.IsSuggestion("review", "setup-matt-pocock-skills") {
+		t.Error("edge should be a Dependency after RemoveSuggestion")
+	}
+	// Adding when already covered by a bulk entry is a no-op.
+	c.Suggestions = []SuggestionEntry{{From: "ask-matt"}}
+	c.AddSuggestion("ask-matt", "tdd")
+	if len(c.Suggestions) != 1 {
+		t.Fatalf("AddSuggestion should be a no-op under a bulk entry: %+v", c.Suggestions)
+	}
+}
+
+func TestSuggestionRequiresFrom(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := Save(path, &Config{Suggestions: []SuggestionEntry{{To: "tdd"}}}); err == nil {
+		t.Fatal("expected error saving a suggestion with no from")
+	}
+}

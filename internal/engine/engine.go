@@ -74,6 +74,11 @@ type AvailableSkill struct {
 	// matrix can flag a Skill its author has retired.
 	Deprecated        bool
 	DeprecationReason string
+	// Refs are the names of other catalog Skills this Skill references in its
+	// files (via a /<name> token or a ../<name>/ path), excluding itself.
+	// Whether each is a Dependency or a Suggestion is decided against Config by
+	// the DependencyGraph; here they are just the raw resolved references.
+	Refs []string `json:"refs,omitempty"`
 }
 
 // Catalog is the result of a Refresh: the available Skills and any per-Source
@@ -126,8 +131,34 @@ func (e *Engine) Refresh() Catalog {
 			})
 		}
 	}
+	resolveRefs(cat.Skills)
 	e.saveCatalog(cat)
 	return cat
+}
+
+// resolveRefs fills each Skill's Refs with the names of other catalog Skills it
+// references. It runs after every Source is scanned, since a reference resolves
+// against the whole catalog's names, not just the referencing Skill's Source. A
+// per-Skill scan error is ignored: a missing reference is never worse than the
+// status quo (no Dependency surfaced).
+func resolveRefs(skills []AvailableSkill) {
+	known := make(map[string]bool, len(skills))
+	for _, sk := range skills {
+		known[sk.Name] = true
+	}
+	for i := range skills {
+		refs, err := source.References(skills[i].Dir, known)
+		if err != nil {
+			continue
+		}
+		out := refs[:0]
+		for _, r := range refs {
+			if r != skills[i].Name { // a Skill does not depend on itself
+				out = append(out, r)
+			}
+		}
+		skills[i].Refs = out
+	}
 }
 
 // Status computes the Status of every (available Skill, Target) cell by

@@ -26,6 +26,10 @@ var (
 	dimStyle     = lipgloss.NewStyle().Foreground(cDim)
 	errStyle     = lipgloss.NewStyle().Foreground(cRed)
 
+	// brokenStyle paints a cell (or a dependency in the detail line) amber when
+	// its Dependency closure is unsatisfied in that Target.
+	brokenStyle = lipgloss.NewStyle().Foreground(cAmber)
+
 	// keyStyle renders a keycap in the footer; keyDescStyle its description.
 	keyStyle     = lipgloss.NewStyle().Foreground(cBrand).Bold(true)
 	keyDescStyle = dimStyle
