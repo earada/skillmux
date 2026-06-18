@@ -20,7 +20,7 @@ const maxRefFileSize = 1 << 20 // 1 MiB
 // slash is neither part of a word, a path, nor a URL scheme. The leading class
 // excludes word chars, `.`, `/`, `:` and `-`, so `src/grilling`, `https://h/grilling`,
 // `../grilling` and `a-/grilling` do not match — only true invocation sites like
-// `/grilling`, `` `/grilling` `` or one at the start of a line. The captured name
+// `/grilling`, “ `/grilling` “ or one at the start of a line. The captured name
 // runs to the next non-identifier char, so `/grilling-foo` captures the whole
 // token and will not be mistaken for `/grilling`.
 var invocationRe = regexp.MustCompile(`(?:^|[^\w./:-])/([a-zA-Z0-9][a-zA-Z0-9-]*)`)

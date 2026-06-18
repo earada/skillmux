@@ -77,7 +77,7 @@ func TestSuggestionRoundTripAndQuery(t *testing.T) {
 		Targets: []TargetEntry{{Name: "claude-code", Path: "~/.claude/skills"}},
 		Suggestions: []SuggestionEntry{
 			{From: "review", To: "setup-matt-pocock-skills"}, // specific pair
-			{From: "ask-matt"},                               // bulk: all outgoing edges
+			{From: "ask-matt"}, // bulk: all outgoing edges
 		},
 	}
 	if err := Save(path, c); err != nil {
