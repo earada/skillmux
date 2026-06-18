@@ -151,6 +151,32 @@ func isGitRepo(dir string) bool {
 	return err == nil
 }
 
+// Revision reports the commit the Source's clone currently sits at. ok is false
+// (with no error) for Sources that have no clone to inspect — local Sources, or
+// a GitHub Source not yet fetched. FetchedAt is left zero for the caller to
+// stamp. The ref is the configured Branch, falling back to the checked-out
+// branch name when none was pinned.
+func (f *Fetcher) Revision(src domain.Source) (domain.Revision, bool) {
+	if src.Kind != domain.SourceGitHub {
+		return domain.Revision{}, false
+	}
+	dir := f.CacheDirFor(src)
+	if !isGitRepo(dir) {
+		return domain.Revision{}, false
+	}
+	sha, err := runGit(dir, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return domain.Revision{}, false
+	}
+	ref := src.Branch
+	if ref == "" {
+		if out, err := runGit(dir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+			ref = strings.TrimSpace(out)
+		}
+	}
+	return domain.Revision{Ref: ref, ShortSHA: strings.TrimSpace(sha)}, true
+}
+
 // CacheDirFor returns the cache directory a Source is cloned into, or "" for
 // Sources that are not cached (local Sources resolve in place).
 func (f *Fetcher) CacheDirFor(src domain.Source) string {

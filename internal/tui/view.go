@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
@@ -573,12 +574,19 @@ func (m Model) viewConfig() string {
 			b.WriteString(dimStyle.Render(strings.Repeat("─", max(0, w-6))) + "\n")
 		}
 		kind := "target"
+		detail := e.detail
 		if e.kind == entrySource {
 			kind = "source"
+			if rev, ok := m.cat.Revisions[e.name]; ok {
+				detail += "  " + rev.Label()
+				if !rev.FetchedAt.IsZero() {
+					detail += " · fetched " + humanizeSince(rev.FetchedAt)
+				}
+			}
 		}
-		line := fmt.Sprintf("%-7s %-16s %s", kind, e.name, dimStyle.Render(e.detail))
+		line := fmt.Sprintf("%-7s %-16s %s", kind, e.name, dimStyle.Render(detail))
 		if i == m.cfgCursor {
-			line = cursorStyle.Render(fmt.Sprintf(" %-7s %-16s %s ", kind, e.name, e.detail))
+			line = cursorStyle.Render(fmt.Sprintf(" %-7s %-16s %s ", kind, e.name, detail))
 		}
 		b.WriteString(line + "\n")
 	}
@@ -727,6 +735,22 @@ func (m Model) fileFooter() string {
 		keycap{"esc", "back"},
 		keycap{"q", "quit"},
 	)
+}
+
+// humanizeSince renders how long ago t was as a compact relative string
+// ("just now", "5m ago", "3h ago", "2d ago"), for the Sources list.
+func humanizeSince(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
 }
 
 // pad right-pads s to width w (ANSI-aware).

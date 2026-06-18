@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/earada/skillmux/internal/domain"
 )
 
 // --- pure: buildTree -----------------------------------------------------
@@ -232,6 +234,19 @@ func TestSkillViewStaleRenderIgnored(t *testing.T) {
 	late, _ := m.Update(cmd())
 	if late.(Model).mode != modeSkillTree {
 		t.Fatalf("stale render should be ignored; mode = %v", late.(Model).mode)
+	}
+}
+
+func TestSkillViewShowsRevision(t *testing.T) {
+	e := testEngineSkills(t, "deploy")
+	m := New(e).onRefreshed(e.Refresh())
+	m.width, m.height = 80, 24
+	// Stand in a Revision for the skill's Source (as a GitHub clone would yield).
+	m.cat.Revisions = map[string]domain.Revision{"local": {Ref: "main", ShortSHA: "a1b2c3d"}}
+
+	m = applyKeys(m, runes("v"))
+	if !strings.Contains(m.View(), "main @ a1b2c3d") {
+		t.Errorf("skill view should show the revision label; got:\n%s", m.View())
 	}
 }
 

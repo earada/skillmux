@@ -78,6 +78,32 @@ type Installation struct {
 	InstalledAt time.Time
 }
 
+// Revision is the exact point in a GitHub Source's history that its local clone
+// currently sits at — a per-Source fact surfaced informationally in the UI
+// (every Skill from one clone shares it). Local Sources have no Revision. See
+// CONTEXT.md.
+type Revision struct {
+	// Ref is the branch or tag label the clone tracks, e.g. "main".
+	Ref string
+	// ShortSHA is the abbreviated commit, e.g. "a1b2c3d".
+	ShortSHA string
+	// FetchedAt is when the clone was last updated.
+	FetchedAt time.Time
+}
+
+// Label renders the Revision as "ref @ shortSHA" (e.g. "main @ a1b2c3d"),
+// degrading gracefully when either part is missing.
+func (r Revision) Label() string {
+	switch {
+	case r.Ref == "":
+		return r.ShortSHA
+	case r.ShortSHA == "":
+		return r.Ref
+	default:
+		return r.Ref + " @ " + r.ShortSHA
+	}
+}
+
 // Status is the state of a (Skill, Target) pair as shown in the TUI.
 type Status string
 

@@ -3,15 +3,30 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/earada/skillmux/internal/config"
+	"github.com/earada/skillmux/internal/domain"
 	"github.com/earada/skillmux/internal/engine"
 	"github.com/earada/skillmux/internal/fetch"
 	"github.com/earada/skillmux/internal/manifest"
 )
+
+func TestConfigViewShowsSourceRevision(t *testing.T) {
+	m, _, _ := newConfigModel(t, &config.Config{
+		Sources: []config.SourceEntry{{Name: "remote", Location: "https://github.com/o/r"}},
+	})
+	m.width, m.height = 100, 24
+	m.cat.Revisions = map[string]domain.Revision{"remote": {Ref: "main", ShortSHA: "a1b2c3d"}}
+
+	m, _ = step(t, m, runes("c")) // open config
+	if !strings.Contains(m.View(), "main @ a1b2c3d") {
+		t.Errorf("config view should show the source revision; got:\n%s", m.View())
+	}
+}
 
 func newConfigModel(t *testing.T, cfg *config.Config) (Model, *engine.Engine, string) {
 	t.Helper()

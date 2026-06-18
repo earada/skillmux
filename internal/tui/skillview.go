@@ -331,6 +331,9 @@ func (m Model) treeMetaLines() []string {
 		lines = append(lines, "  "+statusStyles[st].Render(glyph+" "+statusText(st))+"  "+dimStyle.Render(t.Name))
 	}
 	lines = append(lines, dimStyle.Render(m.viewSkill.Dir))
+	if rev, ok := m.cat.Revisions[m.viewSkill.Source]; ok {
+		lines = append(lines, dimStyle.Render(rev.Label()))
+	}
 	return lines
 }
 

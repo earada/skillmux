@@ -189,6 +189,53 @@ func TestOwnerRepo(t *testing.T) {
 	}
 }
 
+func TestRevisionReportsRefAndSHA(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t, map[string]string{"SKILL.md": "x"})
+	f := &Fetcher{CacheDir: t.TempDir()}
+	src := domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: repo, Branch: "main"}
+
+	if _, err := f.Fetch(src); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	rev, ok := f.Revision(src)
+	if !ok {
+		t.Fatal("expected a revision for a fetched GitHub source")
+	}
+	if rev.Ref != "main" {
+		t.Errorf("Ref = %q, want %q", rev.Ref, "main")
+	}
+	if rev.ShortSHA == "" {
+		t.Error("ShortSHA should not be empty")
+	}
+}
+
+func TestRevisionFallsBackToCheckedOutBranch(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t, map[string]string{"SKILL.md": "x"})
+	f := &Fetcher{CacheDir: t.TempDir()}
+	// No Branch pinned: the ref should resolve to the checked-out branch (main).
+	src := domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: repo}
+
+	if _, err := f.Fetch(src); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	rev, ok := f.Revision(src)
+	if !ok || rev.Ref != "main" || rev.ShortSHA == "" {
+		t.Fatalf("Revision = %+v ok=%v; want ref main with a sha", rev, ok)
+	}
+}
+
+func TestRevisionFalseForLocalAndUnfetched(t *testing.T) {
+	f := &Fetcher{CacheDir: t.TempDir()}
+	if _, ok := f.Revision(domain.Source{Name: "l", Kind: domain.SourceLocal, Location: t.TempDir()}); ok {
+		t.Error("local source should have no revision")
+	}
+	if _, ok := f.Revision(domain.Source{Name: "r", Kind: domain.SourceGitHub, Location: "https://github.com/o/r"}); ok {
+		t.Error("unfetched GitHub source should have no revision")
+	}
+}
+
 func TestFetchLocalResolvesPathAndSubpath(t *testing.T) {
 	base := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(base, "skills"), 0o755); err != nil {

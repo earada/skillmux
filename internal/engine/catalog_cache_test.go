@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/earada/skillmux/internal/config"
+	"github.com/earada/skillmux/internal/domain"
 	"github.com/earada/skillmux/internal/fetch"
 	"github.com/earada/skillmux/internal/manifest"
 )
@@ -34,5 +35,21 @@ func TestRefreshPersistsCatalogForInstantStartup(t *testing.T) {
 	}
 	if cached.Skills[0].Fingerprint == "" {
 		t.Error("cached catalog should retain fingerprints")
+	}
+}
+
+func TestCatalogCachePersistsRevisions(t *testing.T) {
+	cacheDir := t.TempDir()
+	e := New(&config.Config{}, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: cacheDir}, "", "")
+	e.saveCatalog(Catalog{
+		Skills:    []AvailableSkill{{Name: "deploy", Source: "remote"}},
+		Revisions: map[string]domain.Revision{"remote": {Ref: "main", ShortSHA: "a1b2c3d"}},
+	})
+
+	e2 := New(&config.Config{}, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: cacheDir}, "", "")
+	cached := e2.CachedCatalog()
+	rev, ok := cached.Revisions["remote"]
+	if !ok || rev.Ref != "main" || rev.ShortSHA != "a1b2c3d" {
+		t.Fatalf("revision not round-tripped through cache: %+v ok=%v", rev, ok)
 	}
 }

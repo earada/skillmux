@@ -7,6 +7,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/earada/skillmux/internal/apply"
 	"github.com/earada/skillmux/internal/config"
@@ -81,10 +82,12 @@ type AvailableSkill struct {
 	Refs []string `json:"refs,omitempty"`
 }
 
-// Catalog is the result of a Refresh: the available Skills and any per-Source
-// errors encountered (Refresh is best-effort across Sources).
+// Catalog is the result of a Refresh: the available Skills, the Revision of each
+// GitHub Source's clone, and any per-Source errors encountered (Refresh is
+// best-effort across Sources).
 type Catalog struct {
 	Skills       []AvailableSkill
+	Revisions    map[string]domain.Revision // keyed by Source name; GitHub Sources only
 	SourceErrors map[string]error
 }
 
@@ -100,12 +103,19 @@ type CellStatus struct {
 // fingerprint of each discovered Skill. Errors from one Source do not stop the
 // others; they are collected in Catalog.SourceErrors.
 func (e *Engine) Refresh() Catalog {
-	cat := Catalog{SourceErrors: map[string]error{}}
+	cat := Catalog{
+		Revisions:    map[string]domain.Revision{},
+		SourceErrors: map[string]error{},
+	}
 	for _, src := range e.Config.DomainSources() {
 		root, err := e.Fetcher.Fetch(src)
 		if err != nil {
 			cat.SourceErrors[src.Name] = err
 			continue
+		}
+		if rev, ok := e.Fetcher.Revision(src); ok {
+			rev.FetchedAt = time.Now()
+			cat.Revisions[src.Name] = rev
 		}
 		skills, err := source.Scan(root, src.Name)
 		if err != nil {

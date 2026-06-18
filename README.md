@@ -77,10 +77,11 @@ source (vim-style, `esc` clears) · `v` view a skill · `r` refresh · `p` previ
 the plan · `c`
 manage targets/sources ·
 `q` quit. From the plan, `y` applies. `v` opens a read-only explorer for the
-skill under the cursor — metadata plus a navigable file tree; `enter` on a file
-shows its contents (markdown rendered, anything else raw), `esc` steps back. The
-config
-screen (`c`) lists sources then targets (split by a rule) and adds (`t`/`s`),
+skill under the cursor — metadata (including the source's `ref @ commit` for a
+GitHub clone) plus a navigable file tree; `enter` on a file shows its contents
+(markdown rendered, anything else raw), `esc` steps back. The config
+screen (`c`) lists sources then targets (split by a rule), showing each GitHub
+source's current `ref @ commit` and when it was last fetched, and adds (`t`/`s`),
 edits (`e`) and deletes (`d`) them, writing changes back to `config.toml`; you
 can still edit the file by hand. `C` clears the download cache of the source
 under the cursor (a no-op for local sources), so the next refresh re-downloads

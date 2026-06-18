@@ -4,14 +4,18 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/earada/skillmux/internal/domain"
 )
 
-// catalogCache is the on-disk form of the last Refresh's available Skills.
-// Persisting it lets the TUI render the matrix instantly on startup from the
-// last-known fingerprints while a fresh Refresh runs in the background.
-// Per-Source errors are not cached; they are transient to each Refresh.
+// catalogCache is the on-disk form of the last Refresh's available Skills and
+// Source Revisions. Persisting it lets the TUI render the matrix instantly on
+// startup from the last-known fingerprints — and show each Source's last-known
+// Revision — while a fresh Refresh runs in the background. Per-Source errors
+// are not cached; they are transient to each Refresh.
 type catalogCache struct {
-	Skills []AvailableSkill `json:"skills"`
+	Skills    []AvailableSkill           `json:"skills"`
+	Revisions map[string]domain.Revision `json:"revisions,omitempty"`
 }
 
 func (e *Engine) catalogPath() string {
@@ -21,7 +25,10 @@ func (e *Engine) catalogPath() string {
 // CachedCatalog loads the last persisted catalog. A missing or unreadable cache
 // yields an empty Catalog (startup simply waits for the first Refresh).
 func (e *Engine) CachedCatalog() Catalog {
-	cat := Catalog{SourceErrors: map[string]error{}}
+	cat := Catalog{
+		Revisions:    map[string]domain.Revision{},
+		SourceErrors: map[string]error{},
+	}
 	data, err := os.ReadFile(e.catalogPath())
 	if err != nil {
 		return cat
@@ -31,13 +38,16 @@ func (e *Engine) CachedCatalog() Catalog {
 		return cat
 	}
 	cat.Skills = c.Skills
+	if c.Revisions != nil {
+		cat.Revisions = c.Revisions
+	}
 	return cat
 }
 
 // saveCatalog persists the catalog's Skills for the next startup. Best-effort:
 // a cache write failure must not break a Refresh.
 func (e *Engine) saveCatalog(cat Catalog) {
-	data, err := json.MarshalIndent(catalogCache{Skills: cat.Skills}, "", "  ")
+	data, err := json.MarshalIndent(catalogCache{Skills: cat.Skills, Revisions: cat.Revisions}, "", "  ")
 	if err != nil {
 		return
 	}
