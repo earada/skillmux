@@ -75,6 +75,31 @@ func (e *Engine) UpdateSource(oldName string, s config.SourceEntry) error {
 		func(old config.Config) { e.Config.Sources = old.Sources })
 }
 
+// ToggleSuggestion flips the classification of the edge from→to and persists the
+// Config: a Dependency becomes a Suggestion (recorded as a `[[suggestion]]`
+// from/to pair) and a Suggestion becomes a Dependency (the pair is dropped). It
+// reports the new state (true == now a Suggestion). A router-wide bulk entry
+// (To empty) is not split by this — callers should consult HasBulkSuggestion and
+// steer the user to the hand-editable TOML instead. On a persist failure the
+// in-memory Config is rolled back and nothing is written.
+func (e *Engine) ToggleSuggestion(from, to string) (nowSuggestion bool, err error) {
+	if e.configPath == "" {
+		return false, errNoConfigPath
+	}
+	old := append([]config.SuggestionEntry(nil), e.Config.Suggestions...)
+	nowSuggestion = !e.Config.IsSuggestion(from, to)
+	if nowSuggestion {
+		e.Config.AddSuggestion(from, to)
+	} else {
+		e.Config.RemoveSuggestion(from, to)
+	}
+	if err := config.Save(e.configPath, e.Config); err != nil {
+		e.Config.Suggestions = old
+		return false, err
+	}
+	return nowSuggestion, nil
+}
+
 // mutate applies change, persists, and rolls back via restore on failure.
 func (e *Engine) mutate(change func(), restore func(old config.Config)) error {
 	if e.configPath == "" {

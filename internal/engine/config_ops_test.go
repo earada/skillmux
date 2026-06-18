@@ -33,6 +33,52 @@ func TestAddTargetPersists(t *testing.T) {
 	}
 }
 
+func TestToggleSuggestionRoundTrips(t *testing.T) {
+	e, configPath := cfgEngine(t)
+
+	// Dependency → Suggestion: records the from/to pair and persists.
+	now, err := e.ToggleSuggestion("review", "tdd")
+	if err != nil {
+		t.Fatalf("ToggleSuggestion: %v", err)
+	}
+	if !now {
+		t.Errorf("expected the edge to become a Suggestion")
+	}
+	if !e.Config.IsSuggestion("review", "tdd") {
+		t.Errorf("in-memory not updated")
+	}
+	reloaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.IsSuggestion("review", "tdd") {
+		t.Errorf("not persisted: %+v", reloaded.Suggestions)
+	}
+
+	// Suggestion → Dependency: drops the pair again.
+	now, err = e.ToggleSuggestion("review", "tdd")
+	if err != nil {
+		t.Fatalf("ToggleSuggestion back: %v", err)
+	}
+	if now {
+		t.Errorf("expected the edge to become a Dependency again")
+	}
+	if e.Config.IsSuggestion("review", "tdd") {
+		t.Errorf("suggestion should have been removed")
+	}
+	reloaded, _ = config.Load(configPath)
+	if reloaded.IsSuggestion("review", "tdd") {
+		t.Errorf("removal not persisted: %+v", reloaded.Suggestions)
+	}
+}
+
+func TestToggleSuggestionWithoutConfigPath(t *testing.T) {
+	e := New(&config.Config{}, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: t.TempDir()}, "", filepath.Join(t.TempDir(), "m.json"))
+	if _, err := e.ToggleSuggestion("a", "b"); err == nil {
+		t.Errorf("expected an error when no config path is configured")
+	}
+}
+
 func TestAddTargetRejectsDuplicateAndDoesNotPersist(t *testing.T) {
 	e, configPath := cfgEngine(t)
 	if err := e.AddTarget("cc", "/a"); err != nil {

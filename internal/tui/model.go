@@ -68,10 +68,12 @@ type Model struct {
 
 	// Skill-view state (modeSkillTree / modeFileView).
 	viewSkill   engine.AvailableSkill // the Skill being explored
+	viewEdges   []skillEdge           // its outgoing Dependency / Suggestion edges
 	viewTree    []treeLine            // its recursive file tree
 	treeOK      bool                  // false when the folder is missing on disk
-	treeCursor  int                   // cursor within viewTree
-	treeScroll  int                   // first visible tree row (vertical scroll)
+	treeCursor  int                   // cursor over the edges-then-files nav list
+	treeScroll  int                   // first visible file row (vertical scroll)
+	viewMsg     string                // transient note for the skill view (e.g. toggled)
 	openPath    string                // relative path of the open file (breadcrumb)
 	fileContent fileContent           // the classified open file
 	fileVP      viewport.Model        // scroll container for the open file

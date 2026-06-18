@@ -131,10 +131,25 @@ func (m Model) enterSkillView() Model {
 		return m
 	}
 	m.viewSkill = sk
+	m.viewEdges = m.skillEdges(sk)
 	m.viewTree, m.treeOK = buildTree(sk.Dir)
 	m.treeCursor, m.treeScroll = 0, 0
+	m.viewMsg = ""
 	m.mode = modeSkillTree
 	return m
+}
+
+// navLen is the length of the skill view's navigable list: its outgoing edges
+// followed by its file-tree rows. treeCursor indexes this combined list.
+func (m Model) navLen() int { return len(m.viewEdges) + len(m.viewTree) }
+
+// curEdge returns the edge under the cursor, if the cursor is in the edges
+// section (the first len(viewEdges) rows).
+func (m Model) curEdge() (skillEdge, bool) {
+	if m.treeCursor >= 0 && m.treeCursor < len(m.viewEdges) {
+		return m.viewEdges[m.treeCursor], true
+	}
+	return skillEdge{}, false
 }
 
 func (m Model) onSkillTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -151,7 +166,9 @@ func (m Model) onSkillTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "home", "g":
 		m.treeCursor = 0
 	case "end", "G":
-		m.treeCursor = len(m.viewTree) - 1
+		m.treeCursor = m.navLen() - 1
+	case "t":
+		return m.toggleEdge(), nil
 	case "enter":
 		if line, ok := m.curTreeLine(); ok && !line.isDir {
 			return m.openFile(line.relPath)
@@ -159,6 +176,33 @@ func (m Model) onSkillTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.clampTreeCursor()
 	return m, nil
+}
+
+// toggleEdge flips the focused edge between Dependency and Suggestion and
+// persists it to Config. A router-wide bulk Suggestion cannot be lifted per
+// edge, so it steers the user to the hand-editable TOML instead. A no-op when
+// the cursor is not on an edge.
+func (m Model) toggleEdge() Model {
+	e, ok := m.curEdge()
+	if !ok {
+		return m
+	}
+	if e.bulk {
+		m.viewMsg = "router-wide suggestion — edit the [[suggestion]] entry in config.toml to change"
+		return m
+	}
+	now, err := m.eng.ToggleSuggestion(m.viewSkill.Name, e.to)
+	if err != nil {
+		m.viewMsg = "could not save: " + err.Error()
+		return m
+	}
+	m.viewEdges = m.skillEdges(m.viewSkill) // reflect the new classification
+	kind := "Dependency"
+	if now {
+		kind = "Suggestion"
+	}
+	m.viewMsg = fmt.Sprintf("%s → %s is now a %s", m.viewSkill.Name, e.to, kind)
+	return m
 }
 
 // openFile classifies the file at relPath within the current Skill and switches
@@ -186,32 +230,43 @@ func (m Model) onFileViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// curTreeLine returns the tree row under the cursor, if any.
+// curTreeLine returns the file-tree row under the cursor, if the cursor is in
+// the files section (the rows after the edges).
 func (m Model) curTreeLine() (treeLine, bool) {
-	if m.treeCursor < 0 || m.treeCursor >= len(m.viewTree) {
+	fi := m.treeCursor - len(m.viewEdges)
+	if fi < 0 || fi >= len(m.viewTree) {
 		return treeLine{}, false
 	}
-	return m.viewTree[m.treeCursor], true
+	return m.viewTree[fi], true
 }
 
-// clampTreeCursor keeps the tree cursor in range and inside the scroll window,
-// mirroring clampCursor for the matrix.
+// clampTreeCursor keeps the cursor in range over the combined edges-then-files
+// list. The edges block is small and always rendered in full; only the file
+// tree scrolls, so treeScroll is a window over the file rows alone. When the
+// cursor sits in the edges block the file tree rests at its top.
 func (m *Model) clampTreeCursor() {
-	n := len(m.viewTree)
+	n := m.navLen()
 	if m.treeCursor < 0 {
 		m.treeCursor = 0
 	}
 	if m.treeCursor >= n {
 		m.treeCursor = max(0, n-1)
 	}
+
+	nEdges := len(m.viewEdges)
+	if m.treeCursor < nEdges {
+		m.treeScroll = 0
+		return
+	}
+	fc := m.treeCursor - nEdges // cursor's index within the file tree
 	vis := m.treeVisibleRows()
-	if m.treeCursor < m.treeScroll {
-		m.treeScroll = m.treeCursor
+	if fc < m.treeScroll {
+		m.treeScroll = fc
 	}
-	if m.treeCursor >= m.treeScroll+vis {
-		m.treeScroll = m.treeCursor - vis + 1
+	if fc >= m.treeScroll+vis {
+		m.treeScroll = fc - vis + 1
 	}
-	if hi := n - vis; m.treeScroll > hi {
+	if hi := len(m.viewTree) - vis; m.treeScroll > hi {
 		m.treeScroll = hi
 	}
 	if m.treeScroll < 0 {
@@ -262,8 +317,14 @@ func (m Model) treeVisibleRows() int {
 	if h <= 0 {
 		return max(1, len(m.viewTree))
 	}
-	// header(1) + blank(1) + metadata + rule(1) + footer.
+	// header(1) + blank(1) + metadata + rule(1) + Dependencies block + footer.
 	avail := h - 2 - len(m.treeMetaLines()) - 1 - lipgloss.Height(m.skillTreeFooter())
+	if n := len(m.viewEdges); n > 0 {
+		avail -= 1 + n + 1 + 1 // "Dependencies" header + edges + spacer + "Files" header
+	}
+	if m.viewMsg != "" {
+		avail-- // transient note line below the tree
+	}
 	if avail < 1 {
 		avail = 1
 	}

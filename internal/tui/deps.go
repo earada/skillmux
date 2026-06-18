@@ -42,6 +42,39 @@ func (m Model) cellPresent(c reconcile.Cell, st domain.Status) bool {
 	return m.desired[c] || st == domain.StatusUpToDate || st == domain.StatusUpdateAvailable
 }
 
+// skillEdge is one outgoing inter-Skill reference shown in the 'v' skill view: a
+// Dependency or a Suggestion, with the Source that resolves it (and whether that
+// crosses Sources). bulk marks an edge a router-wide `[[suggestion]]` (To empty)
+// holds down — the per-edge toggle cannot lift it, so only the TOML can.
+type skillEdge struct {
+	to          string
+	suggestion  bool
+	crossSource bool
+	source      string
+	bulk        bool
+}
+
+// skillEdges resolves the cursor Skill's outgoing references into edges, sorted
+// by target name. Dependencies and Suggestions are unioned (every detected Ref
+// is one or the other) so the view lists the whole relationship at once.
+func (m Model) skillEdges(sk engine.AvailableSkill) []skillEdge {
+	g := m.eng.DependencyGraph(m.cat)
+	offers := m.sourceOffers()
+	bulk := m.eng.Config.HasBulkSuggestion(sk.Name)
+
+	edges := make([]skillEdge, 0, len(g.Deps(sk.Name))+len(g.Suggests(sk.Name)))
+	for _, d := range g.Deps(sk.Name) {
+		src, cross := resolveOffer(offers[d], sk.Source)
+		edges = append(edges, skillEdge{to: d, source: src, crossSource: cross})
+	}
+	for _, s := range g.Suggests(sk.Name) {
+		src, cross := resolveOffer(offers[s], sk.Source)
+		edges = append(edges, skillEdge{to: s, suggestion: true, source: src, crossSource: cross, bulk: bulk})
+	}
+	sort.Slice(edges, func(i, j int) bool { return edges[i].to < edges[j].to })
+	return edges
+}
+
 // brokenEntry is one present cell whose Dependency closure is unsatisfied,
 // paired with the missing members. The Plan's "broken" section is a sorted list
 // of these.

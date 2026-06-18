@@ -55,6 +55,19 @@ func testEngineSkills(t *testing.T, names ...string) *engine.Engine {
 	return engine.New(cfg, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: t.TempDir()}, "", mp)
 }
 
+// testEngineCfg is testEngineSkills with a real config path, so Config
+// mutations (e.g. toggling a Suggestion in the 'v' view) can persist.
+func testEngineCfg(t *testing.T) *engine.Engine {
+	t.Helper()
+	cfg := &config.Config{
+		Targets: []config.TargetEntry{{Name: "cc", Path: t.TempDir()}},
+		Sources: []config.SourceEntry{{Name: "local", Location: t.TempDir()}},
+	}
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	mp := filepath.Join(t.TempDir(), "m.json")
+	return engine.New(cfg, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: t.TempDir()}, configPath, mp)
+}
+
 func runes(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
 
 func TestModelFilterNarrowsRows(t *testing.T) {

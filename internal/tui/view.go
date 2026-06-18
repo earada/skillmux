@@ -624,6 +624,15 @@ func (m Model) viewSkillTree() string {
 	w, _ := m.dims()
 	lines = append(lines, dimStyle.Render(strings.Repeat("─", max(0, w-2))))
 
+	nEdges := len(m.viewEdges)
+	if nEdges > 0 {
+		lines = append(lines, headingStyle.Render("Dependencies"))
+		for i, e := range m.viewEdges {
+			lines = append(lines, m.edgeRow(e, i == m.treeCursor))
+		}
+		lines = append(lines, "", headingStyle.Render("Files"))
+	}
+
 	switch {
 	case !m.treeOK:
 		lines = append(lines, dimStyle.Render("(files unavailable — not downloaded yet)"))
@@ -633,14 +642,45 @@ func (m Model) viewSkillTree() string {
 		vis := m.treeVisibleRows()
 		end := min(m.treeScroll+vis, len(m.viewTree))
 		for i := m.treeScroll; i < end; i++ {
-			lines = append(lines, m.treeRow(m.viewTree[i], i == m.treeCursor))
+			lines = append(lines, m.treeRow(m.viewTree[i], nEdges+i == m.treeCursor))
 		}
 		if vis < len(m.viewTree) {
 			lines = append(lines, dimStyle.Render(fmt.Sprintf("showing %d–%d of %d  ↑↓ to scroll",
 				m.treeScroll+1, end, len(m.viewTree))))
 		}
 	}
+	if m.viewMsg != "" {
+		lines = append(lines, dimStyle.Render(m.viewMsg))
+	}
 	return m.frame(header, lipgloss.JoinVertical(lipgloss.Left, lines...), footer)
+}
+
+// edgeRow renders one outgoing-edge line in the Dependencies section: the target
+// Skill name, whether it is a Dependency or a Suggestion, the resolving Source
+// when it crosses Sources, and a note when a router-wide entry holds it down.
+// Suggestions render dimmed — never the warning colour — distinct from a
+// Dependency, per ADR 0005.
+func (m Model) edgeRow(e skillEdge, cursor bool) string {
+	label := e.to
+	if e.crossSource && e.source != "" {
+		label += " (" + e.source + ")"
+	}
+	kind := "dependency"
+	if e.suggestion {
+		kind = "suggestion"
+	}
+	note := ""
+	if e.bulk {
+		note = " · router-wide (edit config.toml)"
+	}
+	if cursor {
+		return cursorStyle.Render(" " + label + "  —  " + kind + note + " ")
+	}
+	nameStyle := skillNameStyle
+	if e.suggestion {
+		nameStyle = dimStyle
+	}
+	return "  " + nameStyle.Render(label) + dimStyle.Render("  —  "+kind+note)
 }
 
 // treeRow renders one file-tree line: indented by depth, directories suffixed
@@ -661,12 +701,14 @@ func (m Model) treeRow(t treeLine, cursor bool) string {
 }
 
 func (m Model) skillTreeFooter() string {
-	return footerKeys(
-		keycap{"↑↓", "move"},
-		keycap{"enter", "open"},
-		keycap{"esc", "back"},
-		keycap{"q", "quit"},
-	)
+	caps := []keycap{{"↑↓", "move"}}
+	if _, ok := m.curEdge(); ok {
+		caps = append(caps, keycap{"t", "dep⇄suggest"})
+	} else {
+		caps = append(caps, keycap{"enter", "open"})
+	}
+	caps = append(caps, keycap{"esc", "back"}, keycap{"q", "quit"})
+	return footerKeys(caps...)
 }
 
 func (m Model) viewFileView() string {

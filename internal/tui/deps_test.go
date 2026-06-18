@@ -243,6 +243,132 @@ func TestPlanFKeyFixesAndRecomputes(t *testing.T) {
 	}
 }
 
+func TestSkillEdgesClassifiesDependencyAndSuggestion(t *testing.T) {
+	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b", "c"}}
+	b := engine.AvailableSkill{Name: "b", Source: "local"}
+	c := engine.AvailableSkill{Name: "c", Source: "other"}
+	m := New(testEngineSkills(t, "x"))
+	m.eng.Config.Suggestions = []config.SuggestionEntry{{From: "a", To: "c"}}
+	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b, c}}
+	m.skills = m.cat.Skills
+
+	edges := m.skillEdges(a)
+	if len(edges) != 2 {
+		t.Fatalf("expected 2 edges, got %+v", edges)
+	}
+	byName := map[string]skillEdge{}
+	for _, e := range edges {
+		byName[e.to] = e
+	}
+	if byName["b"].suggestion {
+		t.Errorf("b should be a Dependency")
+	}
+	if !byName["c"].suggestion {
+		t.Errorf("c should be a Suggestion (reclassified in config)")
+	}
+	if !byName["c"].crossSource || byName["c"].source != "other" {
+		t.Errorf("c is offered only by 'other' → cross-Source, got %+v", byName["c"])
+	}
+}
+
+func TestToggleEdgePersistsAndReclassifies(t *testing.T) {
+	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
+	b := engine.AvailableSkill{Name: "b", Source: "local"}
+	m := New(testEngineCfg(t))
+	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
+	m.skills = m.cat.Skills
+	m.row = 0
+	m = m.enterSkillView()
+
+	if e, ok := m.curEdge(); !ok || e.suggestion {
+		t.Fatalf("expected cursor on a Dependency edge, got %+v ok=%v", e, ok)
+	}
+
+	m = m.toggleEdge()
+	if e, _ := m.curEdge(); !e.suggestion {
+		t.Errorf("edge should now be a Suggestion: %+v", e)
+	}
+	if !m.eng.Config.IsSuggestion("a", "b") {
+		t.Errorf("config not updated")
+	}
+	if m.viewMsg == "" {
+		t.Errorf("expected a confirmation message")
+	}
+
+	m = m.toggleEdge() // back to Dependency
+	if e, _ := m.curEdge(); e.suggestion {
+		t.Errorf("edge should be a Dependency again: %+v", e)
+	}
+}
+
+func TestToggleEdgeRefusesBulkSuggestion(t *testing.T) {
+	// A router-wide bulk entry (To empty) cannot be lifted per edge.
+	a := engine.AvailableSkill{Name: "router", Source: "local", Refs: []string{"b"}}
+	b := engine.AvailableSkill{Name: "b", Source: "local"}
+	m := New(testEngineSkills(t, "x"))
+	m.eng.Config.Suggestions = []config.SuggestionEntry{{From: "router"}} // bulk
+	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
+	m.skills = m.cat.Skills
+	m.row = 0
+	m = m.enterSkillView()
+
+	m = m.toggleEdge()
+	if !m.eng.Config.IsSuggestion("router", "b") {
+		t.Errorf("bulk suggestion must remain in force")
+	}
+	if !strings.Contains(m.viewMsg, "router-wide") {
+		t.Errorf("expected a router-wide guidance message, got %q", m.viewMsg)
+	}
+}
+
+func TestSkillViewNavSpansEdgesThenFiles(t *testing.T) {
+	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
+	b := engine.AvailableSkill{Name: "b", Source: "local"}
+	m := New(testEngineSkills(t, "x"))
+	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
+	m.skills = m.cat.Skills
+	m.row = 0
+	m = m.enterSkillView()
+	// One edge, two tree rows injected by hand (folder isn't on disk here).
+	m.viewTree = []treeLine{{name: "SKILL.md", relPath: "SKILL.md"}, {name: "extra.md", relPath: "extra.md"}}
+
+	if m.navLen() != 3 {
+		t.Fatalf("navLen should be edges(1)+files(2)=3, got %d", m.navLen())
+	}
+	// Cursor 0 = edge, no file.
+	if _, ok := m.curEdge(); !ok {
+		t.Errorf("cursor 0 should be the edge")
+	}
+	if _, ok := m.curTreeLine(); ok {
+		t.Errorf("cursor 0 should not be a file")
+	}
+	// Cursor 1 = first file.
+	m.treeCursor = 1
+	if _, ok := m.curEdge(); ok {
+		t.Errorf("cursor 1 should not be an edge")
+	}
+	if line, ok := m.curTreeLine(); !ok || line.name != "SKILL.md" {
+		t.Errorf("cursor 1 should be SKILL.md, got %+v ok=%v", line, ok)
+	}
+}
+
+func TestViewSkillTreeRendersDependenciesSection(t *testing.T) {
+	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
+	b := engine.AvailableSkill{Name: "b", Source: "local"}
+	m := New(testEngineSkills(t, "x"))
+	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
+	m.skills = m.cat.Skills
+	m.row = 0
+	m = m.enterSkillView()
+
+	out := m.viewSkillTree()
+	for _, want := range []string{"Dependencies", "b", "dependency", "Files"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("skill view missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestDepDetailEmptyForLeafSkill(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local"}
 	m := New(testEngineSkills(t, "x"))
