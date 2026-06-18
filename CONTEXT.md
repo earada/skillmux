@@ -44,6 +44,14 @@ _Avoid_: diff, changeset
 The situation where two Skills from different Sources share the same `name`, and thus the same install folder, in a single Target. They cannot coexist; Skillmux surfaces the Conflict and the user picks which Skill wins.
 _Avoid_: clash, collision (in prose only)
 
+**Dependency**:
+A directed relationship where one Skill needs another Skill present in the same Target to work — the depended-on Skill is identified by `name`. Skillmux infers it from the Skill's own text: a `/<name>` invocation token, or a `../<name>/…` path that crosses into a sibling Skill folder, where `<name>` exactly matches another Skill's `name` in the catalog. Loose prose mentions (a name without the `/` or a crossing path) are deliberately not Dependencies — they produce false positives. Detection scans every text file in the Skill's folder, not just `SKILL.md`. Dependencies are transitive: a Skill needs the whole closure of what it (and its Dependencies) reach, walked with a cycle guard. A Dependency is Unsatisfied for a given Target when the Skill is installed (or marked) there but some Skill in its closure is not. Resolution is by `name`, agnostic to which Source supplies it: whatever already occupies that name in the Target satisfies the Dependency (installed reality wins over the catalog). When the only candidate that can satisfy it comes from a Source other than the depending Skill's own, Skillmux flags the cross-Source resolution, since a same-named Skill from elsewhere may not be the companion the author intended. Every detected edge is a Dependency by default; the user may reclassify an edge as a Suggestion.
+_Avoid_: requirement, link, reference (in field name)
+
+**Suggestion**:
+A soft, optional edge from one Skill to another — "you might also want X" — as opposed to a Dependency. It exists only because inference cannot tell a hard call from an advisory mention (e.g. `review` points at `setup-matt-pocock-skills` only _if_ a file is missing; `ask-matt` is a router that names a dozen Skills it never needs). Detection cannot distinguish the two, so every detected edge defaults to Dependency and the user downgrades the false ones to Suggestion. A Suggestion is recorded by the user in Config (a `[[suggestion]]` `from`/`to` pair, or `from` alone to mark every outgoing edge of a router Skill). It is inert: it is shown in the UI (distinct from a Dependency, never the warning colour) but never marks a cell Unsatisfied, never enters the Plan, and is never pulled into a Dependency's closure.
+_Avoid_: recommendation, hint, optional dependency
+
 **Config**:
 The user-owned, hand-editable declarative input (TOML, under XDG `~/.config/skillmux/`): the list of Targets and the list of Sources (each `{ url-or-folder, branch?, subpath? }`). Also editable from the TUI, but the file is the readable source of truth.
 _Avoid_: settings, manifest
