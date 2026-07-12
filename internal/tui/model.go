@@ -46,7 +46,11 @@ type Model struct {
 	desired      map[reconcile.Cell]bool
 	sourceErrors map[string]error
 	cat          engine.Catalog
-	loaded       bool
+	// graph answers every dependency question the matrix asks. Built once per
+	// Catalog (in onRefreshed) and after a config edit (toggleEdge); queried with
+	// the current desired selection per keystroke.
+	graph  *engine.SkillGraph
+	loaded bool
 
 	row, col       int
 	scroll         int // index of the first visible skill row (vertical scroll)
@@ -98,6 +102,7 @@ func New(e *engine.Engine) Model {
 		sourceErrors: map[string]error{},
 		search:       search,
 	}
+	m.graph = e.SkillGraph(engine.Catalog{}) // empty until the first Refresh lands
 	if cached := e.CachedCatalog(); len(cached.Skills) > 0 {
 		m = m.onRefreshed(cached)
 	}
@@ -184,6 +189,7 @@ func (m Model) onRefreshed(cat engine.Catalog) Model {
 	m.refreshing = false
 	m.cat = cat
 	m.sourceErrors = cat.SourceErrors
+	m.graph = m.eng.SkillGraph(cat) // rebuild the dependency graph once per Catalog
 
 	// Compute status first: the row order depends on which skills are installed.
 	cells := m.eng.Status(cat)

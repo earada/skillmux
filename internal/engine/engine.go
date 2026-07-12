@@ -123,7 +123,7 @@ type AvailableSkill struct {
 	// Refs are the names of other catalog Skills this Skill references in its
 	// files (via a /<name> token or a ../<name>/ path), excluding itself.
 	// Whether each is a Dependency or a Suggestion is decided against Config by
-	// the DependencyGraph; here they are just the raw resolved references.
+	// the SkillGraph; here they are just the raw resolved references.
 	Refs []string `json:"refs,omitempty"`
 }
 

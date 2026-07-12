@@ -214,6 +214,9 @@ func (m Model) toggleEdge() Model {
 		m.viewMsg = "could not save: " + err.Error()
 		return m
 	}
+	// The Config changed, so the graph's edge classification is stale — rebuild
+	// it before re-rendering the edges.
+	m.graph = m.eng.SkillGraph(m.cat)
 	m.viewEdges = m.skillEdges(m.viewSkill) // reflect the new classification
 	kind := "Dependency"
 	if now {
