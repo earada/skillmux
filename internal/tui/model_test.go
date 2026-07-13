@@ -200,8 +200,8 @@ func TestModelPlanTransition(t *testing.T) {
 	if m.mode != modePlan {
 		t.Fatalf("expected modePlan, got %v", m.mode)
 	}
-	if len(m.plan.Operations) != 1 || m.plan.Operations[0].Kind != reconcile.Install {
-		t.Fatalf("expected one install op, got %+v", m.plan.Operations)
+	if len(m.preview.Plan.Operations) != 1 || m.preview.Plan.Operations[0].Kind != reconcile.Install {
+		t.Fatalf("expected one install op, got %+v", m.preview.Plan.Operations)
 	}
 }
 

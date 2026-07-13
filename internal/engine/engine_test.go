@@ -77,7 +77,7 @@ func TestStatusNotInstalledThenUpToDate(t *testing.T) {
 		t.Fatalf("before install: got %q, want not-installed", st)
 	}
 
-	rep, err := e.Apply(cell(), cat, apply.Options{})
+	rep, err := e.Apply(e.Preview(cell(), cat), apply.Options{})
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestStatusNotInstalledThenUpToDate(t *testing.T) {
 func TestStatusUpdateAvailableAfterSourceChanges(t *testing.T) {
 	e, _, srcSkillDir, _ := newEnv(t)
 	cat := e.Refresh()
-	if _, err := e.Apply(cell(), cat, apply.Options{}); err != nil {
+	if _, err := e.Apply(e.Preview(cell(), cat), apply.Options{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -121,7 +121,7 @@ func TestStatusUpdateAvailableAfterSourceChanges(t *testing.T) {
 	}
 
 	// Reinstall brings it up to date.
-	if _, err := e.Apply(cell(), cat, apply.Options{}); err != nil {
+	if _, err := e.Apply(e.Preview(cell(), cat), apply.Options{}); err != nil {
 		t.Fatal(err)
 	}
 	cat = e.Refresh()
@@ -133,11 +133,11 @@ func TestStatusUpdateAvailableAfterSourceChanges(t *testing.T) {
 func TestApplyEmptyDesiredUninstalls(t *testing.T) {
 	e, targetPath, _, _ := newEnv(t)
 	cat := e.Refresh()
-	if _, err := e.Apply(cell(), cat, apply.Options{}); err != nil {
+	if _, err := e.Apply(e.Preview(cell(), cat), apply.Options{}); err != nil {
 		t.Fatal(err)
 	}
 	// Now deselect everything.
-	if _, err := e.Apply(nil, cat, apply.Options{}); err != nil {
+	if _, err := e.Apply(e.Preview(nil, cat), apply.Options{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(targetPath, "deploy")); !os.IsNotExist(err) {

@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -56,8 +57,23 @@ func TestPlanConfirmEntersOverwriteWhenCollision(t *testing.T) {
 	if cmd != nil {
 		t.Error("no apply command should run before overwrite is confirmed")
 	}
-	if len(m.collisions) != 1 || m.collisions[0].SkillName != "deploy" {
-		t.Errorf("collisions = %+v", m.collisions)
+	if len(m.preview.Collisions) != 1 || m.preview.Collisions[0].SkillName != "deploy" {
+		t.Errorf("collisions = %+v", m.preview.Collisions)
+	}
+}
+
+func TestPlanPreviewShowsCollisionSection(t *testing.T) {
+	m, _ := envWithUntracked(t)
+	m, _ = step(t, m, runes(" ")) // select deploy -> cc
+	m, _ = step(t, m, runes("p"))
+	if m.mode != modePlan {
+		t.Fatalf("expected modePlan, got %v", m.mode)
+	}
+	out := m.viewPlan()
+	for _, want := range []string{"will overwrite", "deploy"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("plan preview missing %q:\n%s", want, out)
+		}
 	}
 }
 

@@ -216,7 +216,7 @@ func TestPlanFKeyFixesAndRecomputes(t *testing.T) {
 	m = injectCatalog(m, dep, helper)
 	m.desired = map[reconcile.Cell]bool{{Skill: "deploy", Source: "local", Target: "cc"}: true}
 
-	m.plan = m.eng.Plan(selected(m.desired), m.cat)
+	m.preview = m.eng.Preview(selected(m.desired), m.cat)
 	m.mode = modePlan
 	if len(m.brokenList()) != 1 {
 		t.Fatalf("expected a broken entry before fixing, got %+v", m.brokenList())
@@ -232,13 +232,13 @@ func TestPlanFKeyFixesAndRecomputes(t *testing.T) {
 		t.Errorf("plan should no longer be broken after f: %+v", m.brokenList())
 	}
 	var installsHelper bool
-	for _, op := range m.plan.Operations {
+	for _, op := range m.preview.Plan.Operations {
 		if op.SkillName == "helper" && op.Kind == reconcile.Install {
 			installsHelper = true
 		}
 	}
 	if !installsHelper {
-		t.Errorf("recomputed plan should install the missing dependency helper: %+v", m.plan.Operations)
+		t.Errorf("recomputed plan should install the missing dependency helper: %+v", m.preview.Plan.Operations)
 	}
 }
 

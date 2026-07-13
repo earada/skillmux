@@ -5,7 +5,6 @@
 package engine
 
 import (
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -262,58 +261,43 @@ func (e *Engine) cellStatus(sk AvailableSkill, target string) domain.Status {
 	return domain.StatusUpdateAvailable
 }
 
-// Collision is an Install that would write over a folder already present at the
-// Target but not tracked in the Manifest — placed by hand or another tool. The
-// user must confirm before Skillmux overwrites it (ADR 0002).
-type Collision struct {
-	SkillName  string
-	SourceName string
-	TargetName string
-	Dir        string
+// Preview is the fully-resolved "what will happen" for a desired selection: the
+// reconcile Plan and the untracked-overwrite Collisions, computed once, plus the
+// execution inputs (resolved Skill folders and Target paths) pinned so a later
+// Apply runs exactly what was previewed. Build it with Preview; hand it to
+// Apply. The unexported fields are the pinned execution inputs — only Apply
+// reads them.
+type Preview struct {
+	// Plan is the reconcile operations the Apply will carry out.
+	Plan reconcile.Plan
+	// Collisions are the untracked folders the Plan would overwrite, which the
+	// user must confirm before Apply proceeds (ADR 0002).
+	Collisions []apply.Collision
+
+	resolved map[apply.SkillID]apply.ResolvedSkill
+	targets  map[string]string
 }
 
-// Collisions reports, for a Plan, the untracked folders its Install operations
-// would overwrite. Only Install ops can collide: reconcile emits Install solely
-// when nothing is tracked for that (Target, Skill), so a folder there is
-// untracked by definition.
-func (e *Engine) Collisions(plan reconcile.Plan) []Collision {
+// Preview computes the reconcile Plan for a desired selection and the untracked
+// folders it would overwrite, pinning the execution inputs so a later Apply runs
+// verbatim. It reads the current catalog and Manifest; the only disk it touches
+// is the stat behind collision detection.
+func (e *Engine) Preview(desired []reconcile.Cell, cat Catalog) Preview {
 	targets := e.targetPaths()
-	var out []Collision
-	for _, op := range plan.Operations {
-		if op.Kind != reconcile.Install {
-			continue
-		}
-		path, ok := targets[op.TargetName]
-		if !ok {
-			continue
-		}
-		if _, tracked := e.Manifest.Find(op.TargetName, op.SkillName); tracked {
-			continue
-		}
-		dir := filepath.Join(path, op.SkillName)
-		if _, err := os.Stat(dir); err == nil {
-			out = append(out, Collision{
-				SkillName:  op.SkillName,
-				SourceName: op.SourceName,
-				TargetName: op.TargetName,
-				Dir:        dir,
-			})
-		}
+	plan := reconcile.Reconcile(desired, availableForReconcile(cat), e.Manifest.Installations)
+	return Preview{
+		Plan:       plan,
+		Collisions: apply.Collisions(plan, targets, e.Manifest),
+		resolved:   e.resolved(cat),
+		targets:    targets,
 	}
-	return out
 }
 
-// Plan computes the reconcile Plan for a desired selection against the current
-// catalog and Manifest.
-func (e *Engine) Plan(desired []reconcile.Cell, cat Catalog) reconcile.Plan {
-	return reconcile.Reconcile(desired, availableForReconcile(cat), e.Manifest.Installations)
-}
-
-// Apply computes the Plan, executes it, and persists the Manifest. It returns
-// the per-operation Report; the error is non-nil only if persisting fails.
-func (e *Engine) Apply(desired []reconcile.Cell, cat Catalog, opts apply.Options) (apply.Report, error) {
-	plan := e.Plan(desired, cat)
-	rep := apply.Apply(plan, e.targetPaths(), e.resolved(cat), e.Manifest, opts)
+// Apply executes a Preview verbatim — the exact Plan the user saw, against the
+// catalog snapshot the Preview pinned — and persists the Manifest. The error is
+// non-nil only if persisting fails; per-operation outcomes live in the Report.
+func (e *Engine) Apply(pre Preview, opts apply.Options) (apply.Report, error) {
+	rep := apply.Apply(pre.Plan, pre.targets, pre.resolved, e.Manifest, opts)
 	if err := manifest.Save(e.manifestPath, e.Manifest); err != nil {
 		return rep, err
 	}

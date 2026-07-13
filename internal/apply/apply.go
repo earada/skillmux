@@ -65,9 +65,67 @@ func (r Report) AllOK() bool {
 	return true
 }
 
-// Apply carries out plan, mutating man in memory (the caller persists it).
-// targets maps Target name to its path; resolved maps an available Skill to its
-// cached folder and fingerprint.
+// Collision is an Install or Reinstall whose destination folder already exists
+// at the Target but is not tracked in the Manifest — placed by hand or another
+// tool. Skillmux refuses to overwrite it without explicit confirmation (ADR
+// 0002). engine.Preview surfaces these; install enforces the refusal.
+type Collision struct {
+	SkillName  string
+	SourceName string
+	TargetName string
+	Dir        string
+}
+
+// Collisions reports every operation in plan whose destination is an untracked
+// folder that would be clobbered. It is the pre-flight projection of the very
+// collides predicate install enforces at write time, so a preview and the
+// enforcement can never disagree about what counts as a collision.
+func Collisions(plan reconcile.Plan, targets map[string]string, man *manifest.Manifest) []Collision {
+	var out []Collision
+	for _, op := range plan.Operations {
+		if c, ok := collides(op, targets, man); ok {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// collides is the single definition of the untracked-overwrite invariant: it
+// reports whether op would write over a folder that exists at the Target but is
+// not recorded in the Manifest. Consulted by both Collisions (pre-flight) and
+// install (write-time), so the two can never drift. A Reinstall is only ever
+// emitted when the Skill is already tracked, so it never collides — the
+// predicate gives the right answer per op without special-casing kind.
+func collides(op reconcile.Operation, targets map[string]string, man *manifest.Manifest) (Collision, bool) {
+	switch op.Kind {
+	case reconcile.Install, reconcile.Reinstall:
+	default:
+		return Collision{}, false
+	}
+	targetPath, ok := targets[op.TargetName]
+	if !ok {
+		return Collision{}, false
+	}
+	if _, tracked := man.Find(op.TargetName, op.SkillName); tracked {
+		return Collision{}, false
+	}
+	dir := filepath.Join(targetPath, op.SkillName)
+	if !exists(dir) {
+		return Collision{}, false
+	}
+	return Collision{
+		SkillName:  op.SkillName,
+		SourceName: op.SourceName,
+		TargetName: op.TargetName,
+		Dir:        dir,
+	}, true
+}
+
+// Apply carries out plan, mutating man in memory but NOT persisting it — the
+// caller (engine.Apply) owns persistence. It is the internal disk executor of
+// the Preview→Apply seam; callers outside the engine (its own tests) must
+// remember to persist the Manifest themselves. targets maps Target name to its
+// path; resolved maps an available Skill to its cached folder and fingerprint.
 func Apply(plan reconcile.Plan, targets map[string]string, resolved map[SkillID]ResolvedSkill, man *manifest.Manifest, opts Options) Report {
 	now := opts.now
 	if now == nil {
@@ -106,9 +164,9 @@ func install(op reconcile.Operation, targets map[string]string, resolved map[Ski
 	}
 
 	dest := filepath.Join(targetPath, op.SkillName)
-	_, tracked := man.Find(op.TargetName, op.SkillName)
-	if exists(dest) && !tracked {
-		// Safety invariant: never clobber a folder we did not install.
+	if _, collision := collides(op, targets, man); collision {
+		// Safety invariant (ADR 0002): never clobber a folder we did not install
+		// without explicit confirmation. Same predicate the pre-flight uses.
 		if opts.ConfirmOverwrite == nil || !opts.ConfirmOverwrite(op.TargetName, op.SkillName, dest) {
 			return fmt.Errorf("refusing to overwrite untracked folder %s (confirm to adopt)", dest)
 		}

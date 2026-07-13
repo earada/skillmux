@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 
+	"github.com/earada/skillmux/internal/apply"
 	"github.com/earada/skillmux/internal/domain"
 	"github.com/earada/skillmux/internal/engine"
 	"github.com/earada/skillmux/internal/reconcile"
@@ -442,11 +443,11 @@ func (m Model) viewPlan() string {
 	b.WriteString(headingStyle.Render("Plan") + "\n\n")
 	broken := m.brokenList()
 
-	if len(m.plan.Operations) == 0 {
+	if len(m.preview.Plan.Operations) == 0 {
 		b.WriteString(dimStyle.Render("Nothing to do — selection already matches reality."))
 	} else {
-		lines := make([]string, len(m.plan.Operations))
-		for i, op := range m.plan.Operations {
+		lines := make([]string, len(m.preview.Plan.Operations))
+		for i, op := range m.preview.Plan.Operations {
 			line := fmt.Sprintf("%-9s %s", op.Kind, describeOp(op))
 			if op.Kind == reconcile.Conflict {
 				line = errStyle.Render(line)
@@ -462,10 +463,16 @@ func (m Model) viewPlan() string {
 		b.WriteString("\n\n" + m.renderBrokenSection(broken))
 	}
 
+	// The collision section warns up front that Apply will need explicit
+	// confirmation to overwrite untracked folders (ADR 0002).
+	if len(m.preview.Collisions) > 0 {
+		b.WriteString("\n\n" + renderCollisionSection(m.preview.Collisions))
+	}
+
 	// Footer: 'y' applies whenever there is work; 'f' offers to add the missing
 	// closure when something is fixable; otherwise the empty plan just dismisses.
 	var caps []keycap
-	if len(m.plan.Operations) > 0 {
+	if len(m.preview.Plan.Operations) > 0 {
 		caps = append(caps, keycap{"y", "apply"})
 	}
 	if fixable(broken) {
@@ -507,6 +514,20 @@ func (m Model) renderBrokenSection(broken []brokenEntry) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// renderCollisionSection renders the up-front "⚠ will overwrite" heads-up in the
+// Plan: one line per untracked folder the Plan would clobber. Apply still gates
+// the actual write behind the explicit overwrite confirmation (modeOverwrite).
+func renderCollisionSection(cols []apply.Collision) string {
+	var b strings.Builder
+	b.WriteString(brokenStyle.Render("⚠ will overwrite") +
+		dimStyle.Render("  — these untracked folders need confirmation to adopt") + "\n")
+	for _, c := range cols {
+		b.WriteString("  " + brokenStyle.Render(c.SkillName) +
+			dimStyle.Render(" ("+c.SourceName+") → "+c.TargetName+"  "+c.Dir) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func describeOp(op reconcile.Operation) string {
 	s := op.SkillName
 	if op.SourceName != "" {
@@ -523,7 +544,7 @@ func (m Model) viewOverwrite() string {
 	var b strings.Builder
 	b.WriteString(headingStyle.Render("Overwrite untracked folders?") + "\n\n")
 	b.WriteString(dimStyle.Render("These folders already exist but were not installed by skillmux:") + "\n\n")
-	for _, c := range m.collisions {
+	for _, c := range m.preview.Collisions {
 		b.WriteString(errStyle.Render(c.SkillName) +
 			dimStyle.Render(" ("+c.SourceName+") → "+c.TargetName) + "\n")
 		b.WriteString(dimStyle.Render("  "+c.Dir) + "\n")
