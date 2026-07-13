@@ -80,7 +80,7 @@ func TestInstalledSkillsRiseToTop(t *testing.T) {
 	// should jump ahead of the uninstalled skills regardless.
 	e := testEngineSkills(t, "build", "deploy", "ship")
 	cat := e.Refresh()
-	if _, err := e.Apply([]reconcile.Cell{{Skill: "ship", Source: "local", Target: "cc"}}, cat, apply.Options{}); err != nil {
+	if _, err := e.Apply(e.Preview([]reconcile.Cell{{Skill: "ship", Source: "local", Target: "cc"}}, cat), apply.Options{}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 

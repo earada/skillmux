@@ -68,7 +68,7 @@ func TestConflictResolvedByExclusiveSelection(t *testing.T) {
 		t.Fatalf("exclusive selection should leave exactly one cell, got %+v", sel)
 	}
 	// The plan must therefore contain no Conflict op.
-	plan := e.Plan(sel, m.cat)
+	plan := e.Preview(sel, m.cat).Plan
 	for _, op := range plan.Operations {
 		if op.Kind == reconcile.Conflict {
 			t.Errorf("exclusive selection should not yield a conflict: %+v", plan.Operations)

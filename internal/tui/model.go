@@ -58,10 +58,12 @@ type Model struct {
 	pendingRefresh bool // a Refresh is wanted but one is already running; run it next
 	applying       bool
 	mode           viewMode
-	plan           reconcile.Plan
-	collisions     []engine.Collision
-	report         apply.Report
-	applyErr       error
+	// preview is the engine's "what will happen" for the current selection —
+	// Plan + Collisions computed once when the Plan screen opens, then executed
+	// verbatim by Apply. Replaces separate plan/collisions state.
+	preview  engine.Preview
+	report   apply.Report
+	applyErr error
 
 	cfgCursor int         // cursor in the config-management list
 	cfgMsg    string      // transient status line for the config view (e.g. cache cleared)
@@ -126,16 +128,16 @@ func refreshCmd(e *engine.Engine) tea.Cmd {
 	return func() tea.Msg { return refreshDoneMsg{cat: e.Refresh()} }
 }
 
-func applyCmd(e *engine.Engine, desired []reconcile.Cell, cat engine.Catalog, opts apply.Options) tea.Cmd {
+func applyCmd(e *engine.Engine, pre engine.Preview, opts apply.Options) tea.Cmd {
 	return func() tea.Msg {
-		rep, err := e.Apply(desired, cat, opts)
+		rep, err := e.Apply(pre, opts)
 		return applyDoneMsg{rep: rep, err: err}
 	}
 }
 
 // approveOverwrites builds a ConfirmOverwrite that approves exactly the
 // collisions the user just confirmed, keyed by (Target, Skill).
-func approveOverwrites(cols []engine.Collision) func(target, skill, dir string) bool {
+func approveOverwrites(cols []apply.Collision) func(target, skill, dir string) bool {
 	type key struct{ target, skill string }
 	approved := map[key]bool{}
 	for _, c := range cols {
@@ -306,7 +308,7 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "v":
 		return m.enterSkillView(), nil
 	case "p", "enter":
-		m.plan = m.eng.Plan(selected(m.desired), m.cat)
+		m.preview = m.eng.Preview(selected(m.desired), m.cat)
 		m.mode = modePlan
 	}
 	m.clampCursor()
@@ -348,25 +350,25 @@ func (m *Model) clearFilter() {
 func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "enter":
-		if len(m.plan.Operations) == 0 {
+		if len(m.preview.Plan.Operations) == 0 {
 			m.mode = modeMatrix
 			return m, nil
 		}
-		// If any Install would overwrite an untracked folder, confirm first
-		// (ADR 0002). Otherwise apply straight away.
-		if cols := m.eng.Collisions(m.plan); len(cols) > 0 {
-			m.collisions = cols
+		// If any operation would overwrite an untracked folder, confirm first
+		// (ADR 0002). The Preview already computed the collisions. Otherwise apply
+		// the previewed Plan straight away.
+		if len(m.preview.Collisions) > 0 {
 			m.mode = modeOverwrite
 			return m, nil
 		}
 		m.applying = true
 		m.mode = modeMatrix
-		return m, applyCmd(m.eng, selected(m.desired), m.cat, apply.Options{})
+		return m, applyCmd(m.eng, m.preview, apply.Options{})
 	case "f":
 		// Add the resolvable missing closure to the selection and recompute the
-		// Plan in place, so the broken section shrinks and new Installs appear.
+		// Preview in place, so the broken section shrinks and new Installs appear.
 		m.fixBroken()
-		m.plan = m.eng.Plan(selected(m.desired), m.cat)
+		m.preview = m.eng.Preview(selected(m.desired), m.cat)
 		return m, nil
 	case "n", "esc", "q":
 		m.mode = modeMatrix
@@ -377,14 +379,12 @@ func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) onOverwriteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y":
-		opts := apply.Options{ConfirmOverwrite: approveOverwrites(m.collisions)}
-		m.collisions = nil
+		opts := apply.Options{ConfirmOverwrite: approveOverwrites(m.preview.Collisions)}
 		m.applying = true
 		m.mode = modeMatrix
-		return m, applyCmd(m.eng, selected(m.desired), m.cat, opts)
+		return m, applyCmd(m.eng, m.preview, opts)
 	case "n", "esc", "q":
 		// Cancel: nothing is touched. Back to the matrix.
-		m.collisions = nil
 		m.mode = modeMatrix
 	}
 	return m, nil
