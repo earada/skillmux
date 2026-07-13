@@ -55,15 +55,27 @@ func TestResolveRefsPopulatesFromFiles(t *testing.T) {
 	}
 }
 
+// edgeNames returns the To names of the edges of the given kind, sorted.
+func edgeNames(edges []Edge, kind EdgeKind) []string {
+	var out []string
+	for _, e := range edges {
+		if e.Kind == kind {
+			out = append(out, e.To)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func TestClosureTransitiveWithCycleGuard(t *testing.T) {
 	cat := Catalog{Skills: []AvailableSkill{
 		skill("a", "s", "b"),
 		skill("b", "s", "c"),
 		skill("c", "s", "a"), // cycle back to a
 	}}
-	g := graphEnv(&config.Config{}, nil).DependencyGraph(cat)
-	if got := g.Closure("a"); !reflect.DeepEqual(got, []string{"b", "c"}) {
-		t.Errorf("Closure(a) = %v, want [b c] (self excluded, no infinite loop)", got)
+	g := graphEnv(&config.Config{}, nil).SkillGraph(cat)
+	if got := g.closure("a"); !reflect.DeepEqual(got, []string{"b", "c"}) {
+		t.Errorf("closure(a) = %v, want [b c] (self excluded, no infinite loop)", got)
 	}
 }
 
@@ -74,16 +86,17 @@ func TestSuggestionExcludedFromClosure(t *testing.T) {
 		skill("c", "s"),
 	}}
 	cfg := &config.Config{Suggestions: []config.SuggestionEntry{{From: "a", To: "c"}}}
-	g := graphEnv(cfg, nil).DependencyGraph(cat)
+	g := graphEnv(cfg, nil).SkillGraph(cat)
 
-	if got := g.Deps("a"); !reflect.DeepEqual(got, []string{"b"}) {
-		t.Errorf("Deps(a) = %v, want [b]", got)
+	edges := g.Edges("a", "s")
+	if got := edgeNames(edges, Dependency); !reflect.DeepEqual(got, []string{"b"}) {
+		t.Errorf("dependency edges of a = %v, want [b]", got)
 	}
-	if got := g.Suggests("a"); !reflect.DeepEqual(got, []string{"c"}) {
-		t.Errorf("Suggests(a) = %v, want [c]", got)
+	if got := edgeNames(edges, Suggestion); !reflect.DeepEqual(got, []string{"c"}) {
+		t.Errorf("suggestion edges of a = %v, want [c]", got)
 	}
-	if got := g.Closure("a"); !reflect.DeepEqual(got, []string{"b"}) {
-		t.Errorf("Closure(a) = %v, want [b] (suggestion c excluded)", got)
+	if got := g.closure("a"); !reflect.DeepEqual(got, []string{"b"}) {
+		t.Errorf("closure(a) = %v, want [b] (suggestion c excluded)", got)
 	}
 }
 
@@ -95,11 +108,11 @@ func TestBreakagesPerTarget(t *testing.T) {
 	cfg := &config.Config{Targets: []config.TargetEntry{
 		{Name: "cc", Path: "/x"}, {Name: "cursor", Path: "/y"},
 	}}
-	e := graphEnv(cfg, nil)
+	g := graphEnv(cfg, nil).SkillGraph(cat)
 
 	// a is desired in cc but b is not → cc cell is broken; cursor is clean.
 	desired := []reconcile.Cell{{Skill: "a", Source: "s", Target: "cc"}}
-	br := e.Breakages(cat, desired)
+	br := g.BrokenCells(desired)
 	cc := reconcile.Cell{Skill: "a", Source: "s", Target: "cc"}
 	if miss, ok := br[cc]; !ok || len(miss) != 1 || miss[0].Name != "b" {
 		t.Fatalf("expected cc/a missing [b], got %+v", br)
@@ -110,7 +123,7 @@ func TestBreakagesPerTarget(t *testing.T) {
 
 	// Marking b in cc too satisfies the closure.
 	desired = append(desired, reconcile.Cell{Skill: "b", Source: "s", Target: "cc"})
-	if br := e.Breakages(cat, desired); len(br) != 0 {
+	if br := g.BrokenCells(desired); len(br) != 0 {
 		t.Errorf("expected no breakages once b is marked, got %+v", br)
 	}
 }
@@ -122,9 +135,9 @@ func TestBreakageSatisfiedByInstalled(t *testing.T) {
 	man := &manifest.Manifest{Installations: []domain.Installation{
 		{SkillName: "b", TargetName: "cc", SourceName: "other"},
 	}}
-	e := graphEnv(cfg, man)
+	g := graphEnv(cfg, man).SkillGraph(cat)
 	desired := []reconcile.Cell{{Skill: "a", Source: "s", Target: "cc"}}
-	if br := e.Breakages(cat, desired); len(br) != 0 {
+	if br := g.BrokenCells(desired); len(br) != 0 {
 		t.Errorf("installed b should satisfy the dependency, got %+v", br)
 	}
 }
@@ -138,7 +151,7 @@ func TestBreakageCrossSourceFlag(t *testing.T) {
 		skill("a", "s1", "shared"),
 		skill("shared", "s2"),
 	}}
-	br := graphEnv(cfg, nil).Breakages(cat, desired)
+	br := graphEnv(cfg, nil).SkillGraph(cat).BrokenCells(desired)
 	miss := br[reconcile.Cell{Skill: "a", Source: "s1", Target: "cc"}]
 	if len(miss) != 1 || miss[0].Name != "shared" || miss[0].Source != "s2" || !miss[0].CrossSource {
 		t.Fatalf("expected cross-Source miss from s2, got %+v", miss)
@@ -146,7 +159,7 @@ func TestBreakageCrossSourceFlag(t *testing.T) {
 
 	// Now s1 also offers shared → prefer the same Source, not cross.
 	cat.Skills = append(cat.Skills, skill("shared", "s1"))
-	br = graphEnv(cfg, nil).Breakages(cat, desired)
+	br = graphEnv(cfg, nil).SkillGraph(cat).BrokenCells(desired)
 	miss = br[reconcile.Cell{Skill: "a", Source: "s1", Target: "cc"}]
 	if len(miss) != 1 || miss[0].Source != "s1" || miss[0].CrossSource {
 		t.Fatalf("expected same-Source resolution from s1, got %+v", miss)
@@ -159,7 +172,7 @@ func TestClosureCellsResolvesWholeClosure(t *testing.T) {
 		skill("b", "s", "c"),
 		skill("c", "s"),
 	}}
-	g := graphEnv(&config.Config{}, nil).DependencyGraph(cat)
+	g := graphEnv(&config.Config{}, nil).SkillGraph(cat)
 	cells := g.ClosureCells("a", "s", "cc")
 	got := make([]string, len(cells))
 	for i, c := range cells {

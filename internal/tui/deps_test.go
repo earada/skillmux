@@ -9,12 +9,21 @@ import (
 	"github.com/earada/skillmux/internal/reconcile"
 )
 
+// injectCatalog sets a hand-built Catalog on the Model and rebuilds the
+// dependency graph from it, mirroring what onRefreshed does in production so the
+// graph-backed dep queries see the injected Skills.
+func injectCatalog(m Model, skills ...engine.AvailableSkill) Model {
+	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: skills}
+	m.skills = m.cat.Skills
+	m.graph = m.eng.SkillGraph(m.cat)
+	return m
+}
+
 func TestBrokenCellWhenClosureUnsatisfied(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
 	b := engine.AvailableSkill{Name: "b", Source: "local"}
 	m := New(testEngineSkills(t, "x"))
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b)
 
 	cellA := reconcile.Cell{Skill: "a", Source: "local", Target: "cc"}
 	cellB := reconcile.Cell{Skill: "b", Source: "local", Target: "cc"}
@@ -38,8 +47,7 @@ func TestBrokenCellIgnoresUnmarkedCell(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
 	b := engine.AvailableSkill{Name: "b", Source: "local"}
 	m := New(testEngineSkills(t, "x"))
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b)
 
 	if len(m.brokenCells()) != 0 {
 		t.Fatalf("no cell is present, so none should be broken: %v", m.brokenCells())
@@ -53,8 +61,7 @@ func TestDepDetailListsNeedsAndSuggests(t *testing.T) {
 	c := engine.AvailableSkill{Name: "c", Source: "local"}
 	m := New(testEngineSkills(t, "x"))
 	m.eng.Config.Suggestions = []config.SuggestionEntry{{From: "a", To: "c"}}
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b, c}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b, c)
 	m.row, m.col = 0, 0 // cursor on "a"
 
 	got := m.depDetail()
@@ -70,8 +77,7 @@ func TestDepDetailFlagsCrossSource(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
 	b := engine.AvailableSkill{Name: "b", Source: "other"}
 	m := New(testEngineSkills(t, "x"))
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b)
 	m.row, m.col = 0, 0
 
 	if got := m.depDetail(); !strings.Contains(got, "(other)") {
@@ -86,8 +92,7 @@ func TestMarkClosureMarksSkillAndTransitiveDeps(t *testing.T) {
 	b := engine.AvailableSkill{Name: "b", Source: "local", Refs: []string{"c"}}
 	c := engine.AvailableSkill{Name: "c", Source: "local"}
 	m := New(testEngineSkills(t, "x"))
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b, c}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b, c)
 	m.targets = m.eng.Config.DomainTargets()
 	m.row, m.col = 0, 0 // cursor on "a", target "cc"
 
@@ -111,8 +116,7 @@ func TestMatrixDKeyMarksClosure(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
 	b := engine.AvailableSkill{Name: "b", Source: "local"}
 	m := New(testEngineSkills(t, "x"))
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b)
 	m.row, m.col = 0, 0
 
 	updated, _ := m.Update(runes("d"))
@@ -130,8 +134,7 @@ func TestMarkClosureStaysConflictFree(t *testing.T) {
 	b1 := engine.AvailableSkill{Name: "b", Source: "local"}
 	b2 := engine.AvailableSkill{Name: "b", Source: "other"}
 	m := New(testEngineSkills(t, "x"))
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b1, b2}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b1, b2)
 	m.targets = m.eng.Config.DomainTargets()
 	m.row, m.col = 0, 0
 
@@ -152,8 +155,7 @@ func TestBrokenListReportsMissingClosure(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
 	b := engine.AvailableSkill{Name: "b", Source: "local"}
 	m := New(testEngineSkills(t, "x"))
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b)
 	m.desired[reconcile.Cell{Skill: "a", Source: "local", Target: "cc"}] = true
 
 	broken := m.brokenList()
@@ -172,8 +174,7 @@ func TestViewPlanRendersBrokenSection(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
 	b := engine.AvailableSkill{Name: "b", Source: "local"}
 	m := New(testEngineSkills(t, "x"))
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b)
 	m.desired[reconcile.Cell{Skill: "a", Source: "local", Target: "cc"}] = true
 	m.mode = modePlan
 
@@ -191,8 +192,7 @@ func TestFixBrokenAddsMissingClosureToDesired(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
 	b := engine.AvailableSkill{Name: "b", Source: "local"}
 	m := New(testEngineSkills(t, "x"))
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b)
 	m.desired[reconcile.Cell{Skill: "a", Source: "local", Target: "cc"}] = true
 
 	m.fixBroken()
@@ -213,8 +213,7 @@ func TestPlanFKeyFixesAndRecomputes(t *testing.T) {
 	// Make deploy depend on a second skill that isn't selected.
 	dep := engine.AvailableSkill{Name: "deploy", Source: "local", Refs: []string{"helper"}}
 	helper := engine.AvailableSkill{Name: "helper", Source: "local"}
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{dep, helper}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, dep, helper)
 	m.desired = map[reconcile.Cell]bool{{Skill: "deploy", Source: "local", Target: "cc"}: true}
 
 	m.plan = m.eng.Plan(selected(m.desired), m.cat)
@@ -249,8 +248,7 @@ func TestSkillEdgesClassifiesDependencyAndSuggestion(t *testing.T) {
 	c := engine.AvailableSkill{Name: "c", Source: "other"}
 	m := New(testEngineSkills(t, "x"))
 	m.eng.Config.Suggestions = []config.SuggestionEntry{{From: "a", To: "c"}}
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b, c}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b, c)
 
 	edges := m.skillEdges(a)
 	if len(edges) != 2 {
@@ -275,8 +273,7 @@ func TestToggleEdgePersistsAndReclassifies(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
 	b := engine.AvailableSkill{Name: "b", Source: "local"}
 	m := New(testEngineCfg(t))
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b)
 	m.row = 0
 	m = m.enterSkillView()
 
@@ -307,8 +304,7 @@ func TestToggleEdgeRefusesBulkSuggestion(t *testing.T) {
 	b := engine.AvailableSkill{Name: "b", Source: "local"}
 	m := New(testEngineSkills(t, "x"))
 	m.eng.Config.Suggestions = []config.SuggestionEntry{{From: "router"}} // bulk
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b)
 	m.row = 0
 	m = m.enterSkillView()
 
@@ -325,8 +321,7 @@ func TestSkillViewNavSpansEdgesThenFiles(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
 	b := engine.AvailableSkill{Name: "b", Source: "local"}
 	m := New(testEngineSkills(t, "x"))
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b)
 	m.row = 0
 	m = m.enterSkillView()
 	// One edge, two tree rows injected by hand (folder isn't on disk here).
@@ -356,8 +351,7 @@ func TestViewSkillTreeRendersDependenciesSection(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
 	b := engine.AvailableSkill{Name: "b", Source: "local"}
 	m := New(testEngineSkills(t, "x"))
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a, b}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a, b)
 	m.row = 0
 	m = m.enterSkillView()
 
@@ -372,8 +366,7 @@ func TestViewSkillTreeRendersDependenciesSection(t *testing.T) {
 func TestDepDetailEmptyForLeafSkill(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local"}
 	m := New(testEngineSkills(t, "x"))
-	m.cat = engine.Catalog{SourceErrors: map[string]error{}, Skills: []engine.AvailableSkill{a}}
-	m.skills = m.cat.Skills
+	m = injectCatalog(m, a)
 	m.row, m.col = 0, 0
 
 	if got := m.depDetail(); got != "" {
