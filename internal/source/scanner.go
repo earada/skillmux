@@ -29,6 +29,12 @@ const utf8BOM = "\uFEFF"
 // user gets a clear pointer to fix it.
 func Scan(root, sourceName string) ([]domain.Skill, error) {
 	var skills []domain.Skill
+	// seenBy maps a Skill name to the RelPath where it was first found, so a
+	// second directory declaring the same name can be rejected. A name is a
+	// Skill's identity within a Source; two directories sharing one would make
+	// indistinguishable catalog rows and an install candidate that depends on
+	// scan order. See skillmux-5r0.
+	seenBy := map[string]string{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -50,6 +56,16 @@ func Scan(root, sourceName string) ([]domain.Skill, error) {
 		if err != nil {
 			return err
 		}
+		if firstRel, dup := seenBy[fm.Name]; dup {
+			// Sort the two paths so the message is identical regardless of walk
+			// order, giving stable, testable error reporting.
+			a, b := filepath.ToSlash(firstRel), filepath.ToSlash(rel)
+			if a > b {
+				a, b = b, a
+			}
+			return fmt.Errorf("source %q declares duplicate skill %q at %s and %s", sourceName, fm.Name, a, b)
+		}
+		seenBy[fm.Name] = rel
 		skills = append(skills, domain.Skill{
 			Name:              fm.Name,
 			Description:       fm.Description,

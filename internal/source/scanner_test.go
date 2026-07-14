@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -220,6 +221,84 @@ func TestScanAcceptsCanonicalNames(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Name != "my-skill.v2" {
 		t.Fatalf("expected single skill named my-skill.v2, got %+v", got)
+	}
+}
+
+func TestScanRejectsDuplicateSkillNames(t *testing.T) {
+	// Two sibling directories declaring the same name are an ambiguous identity
+	// within one Source: the catalog would show indistinguishable rows and the
+	// install candidate would depend on scan order. See skillmux-5r0.
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "a"), `---
+name: dup
+description: first
+---
+body`)
+	writeSkill(t, filepath.Join(root, "b"), `---
+name: dup
+description: second
+---
+body`)
+
+	_, err := Scan(root, "mysrc")
+	if err == nil {
+		t.Fatal("expected error for duplicate skill names, got none")
+	}
+	msg := err.Error()
+	for _, want := range []string{"dup", "mysrc", "a", "b"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q missing %q", msg, want)
+		}
+	}
+}
+
+func TestScanRejectsDuplicateSkillNamesInSiblingGroups(t *testing.T) {
+	// The same name under two different group directories is still one Source
+	// declaring one identity twice, and must be rejected with both relpaths.
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "team-a", "deploy"), `---
+name: deploy
+description: team a
+---
+body`)
+	writeSkill(t, filepath.Join(root, "team-b", "deploy"), `---
+name: deploy
+description: team b
+---
+body`)
+
+	_, err := Scan(root, "s")
+	if err == nil {
+		t.Fatal("expected error for duplicate names across groups, got none")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "team-a/deploy") || !strings.Contains(msg, "team-b/deploy") {
+		t.Errorf("error %q should include both relpaths team-a/deploy and team-b/deploy", msg)
+	}
+}
+
+func TestScanDuplicateErrorIsStable(t *testing.T) {
+	// Both relpaths appear in a fixed (sorted) order regardless of which
+	// directory the walk visits first, so callers get stable, testable output.
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "zeta"), `---
+name: dup
+---
+body`)
+	writeSkill(t, filepath.Join(root, "alpha"), `---
+name: dup
+---
+body`)
+
+	_, err := Scan(root, "s")
+	if err == nil {
+		t.Fatal("expected error, got none")
+	}
+	// "alpha" sorts before "zeta" and must be named first in the message.
+	msg := err.Error()
+	ai, zi := strings.Index(msg, "alpha"), strings.Index(msg, "zeta")
+	if ai == -1 || zi == -1 || ai > zi {
+		t.Errorf("error %q should mention alpha before zeta", msg)
 	}
 }
 
