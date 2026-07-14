@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/earada/skillmux/internal/domain"
+	"github.com/earada/skillmux/internal/fingerprint"
 	"github.com/earada/skillmux/internal/manifest"
 	"github.com/earada/skillmux/internal/reconcile"
 )
@@ -54,6 +55,53 @@ func TestInstallCopiesAndRecords(t *testing.T) {
 	in, ok := man.Find("t", "deploy")
 	if !ok || in.Fingerprint != "fp1" || in.SourceName != "s" {
 		t.Errorf("manifest entry wrong: %+v ok=%v", in, ok)
+	}
+}
+
+// TestInstalledSkillMatchesFingerprint proves the invariant behind skillmux-iot:
+// a successfully installed Skill contains the exact defining SKILL.md that its
+// recorded fingerprint covers. It fingerprints the source folder, installs it,
+// then checks the installed SKILL.md is present with identical bytes and that
+// re-fingerprinting the installed folder reproduces the recorded value — so the
+// file that defines the Skill is neither dropped by the copy nor omitted from
+// the fingerprint.
+func TestInstalledSkillMatchesFingerprint(t *testing.T) {
+	const body = "---\nname: deploy\ndescription: d\n---\nbody\n"
+	src := makeSource(t, body)
+	// A second regular file, to ensure the whole folder round-trips.
+	if err := os.WriteFile(filepath.Join(src, "extra.txt"), []byte("more"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fp, err := fingerprint.Dir(src)
+	if err != nil {
+		t.Fatalf("fingerprint source: %v", err)
+	}
+
+	targetPath := t.TempDir()
+	man := &manifest.Manifest{}
+	rep := Apply(
+		reconcile.Plan{Operations: []reconcile.Operation{
+			{Kind: reconcile.Install, SkillName: "deploy", SourceName: "s", TargetName: "t"},
+		}},
+		map[string]string{"t": targetPath},
+		map[SkillID]ResolvedSkill{{Source: "s", Skill: "deploy"}: {Dir: src, Fingerprint: fp}},
+		man, Options{},
+	)
+	if !rep.AllOK() {
+		t.Fatalf("expected success, got %+v", rep.Results)
+	}
+
+	if got := readInstalled(t, targetPath, "deploy"); got != body {
+		t.Errorf("installed SKILL.md = %q, want %q", got, body)
+	}
+	installedDir := filepath.Join(targetPath, "deploy")
+	got, err := fingerprint.Dir(installedDir)
+	if err != nil {
+		t.Fatalf("fingerprint installed: %v", err)
+	}
+	if got != fp {
+		t.Errorf("installed fingerprint %q != recorded %q; installed content diverged from the fingerprinted source", got, fp)
 	}
 }
 

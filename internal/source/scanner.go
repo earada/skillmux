@@ -43,9 +43,22 @@ func Scan(root, sourceName string) ([]domain.Skill, error) {
 			return nil
 		}
 		skillFile := filepath.Join(path, skillFileName)
-		info, statErr := os.Stat(skillFile)
-		if statErr != nil || info.IsDir() {
+		info, statErr := os.Lstat(skillFile)
+		if statErr != nil {
 			return nil // no SKILL.md here; keep descending
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			// A symlinked SKILL.md is discoverable here — os.Stat would follow it
+			// and read valid frontmatter — but fingerprint.Dir and apply.copyDir
+			// copy only regular files, so they skip it. Cataloguing such a
+			// directory would produce an installed Skill missing the very file
+			// that defines it and a fingerprint that omits it. Reject it at the
+			// source so scan, fingerprint, view, and apply all agree on what a
+			// Skill is. See skillmux-iot.
+			return fmt.Errorf("%s: SKILL.md is a symlink; a Skill's SKILL.md must be a regular file", skillFile)
+		}
+		if info.IsDir() {
+			return nil // a directory named SKILL.md does not define a Skill; keep descending
 		}
 
 		fm, err := parseFrontmatter(skillFile)

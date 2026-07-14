@@ -302,6 +302,39 @@ body`)
 	}
 }
 
+func TestScanRejectsSymlinkedSkillFile(t *testing.T) {
+	// A directory whose SKILL.md is a symlink is discoverable (os.Stat follows
+	// the link to valid frontmatter) but fingerprint.Dir and apply.copyDir copy
+	// only regular files, so the installed folder would lack the defining
+	// SKILL.md. The scanner must reject it before it reaches the catalog. See
+	// skillmux-iot.
+	root := t.TempDir()
+	// A valid SKILL.md living outside the skill directory.
+	realDir := filepath.Join(root, "elsewhere")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realFile := filepath.Join(realDir, "real.md")
+	if err := os.WriteFile(realFile, []byte(deployMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(root, "linked")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realFile, filepath.Join(skillDir, "SKILL.md")); err != nil {
+		t.Skipf("symlinks unsupported on this platform: %v", err)
+	}
+
+	_, err := Scan(root, "s")
+	if err == nil {
+		t.Fatal("expected error for symlinked SKILL.md, got none")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error %q should explain the SKILL.md is a symlink", err)
+	}
+}
+
 func TestScanRootIsItselfASkill(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, root, deployMD)
