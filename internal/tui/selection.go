@@ -10,12 +10,15 @@ import (
 
 // initialDesired derives the starting desired selection from the current
 // Status: a cell is desired when its Skill is already installed from that
-// Source (up-to-date or update-available), so the matrix opens reflecting
-// reality.
+// Source (up-to-date, update-available, or unavailable-but-still-installed), so
+// the matrix opens reflecting reality. An unavailable installed cell starts
+// desired so the default action is to keep it — reconcile no-ops it rather than
+// uninstalling behind the user's back; deselecting it uninstalls deliberately.
 func initialDesired(cells []engine.CellStatus) map[reconcile.Cell]bool {
 	d := map[reconcile.Cell]bool{}
 	for _, c := range cells {
-		if c.Status == domain.StatusUpToDate || c.Status == domain.StatusUpdateAvailable {
+		switch c.Status {
+		case domain.StatusUpToDate, domain.StatusUpdateAvailable, domain.StatusUnavailable:
 			d[reconcile.Cell{Skill: c.SkillName, Source: c.SourceName, Target: c.TargetName}] = true
 		}
 	}

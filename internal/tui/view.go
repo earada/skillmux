@@ -406,6 +406,7 @@ func (m Model) matrixFooter() string {
 		statusStyles[domain.StatusUpdateAvailable].Render("↑ update"),
 		dimStyle.Render("· not-installed"),
 		statusStyles[domain.StatusConflict].Render("! conflict"),
+		statusStyles[domain.StatusUnavailable].Render("× unavailable"),
 		dimStyle.Render("✓ selected"),
 		deprecatedStyle.Render(deprecatedGlyph + " deprecated"),
 	}, dimStyle.Render("   "))

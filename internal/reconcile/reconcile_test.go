@@ -60,6 +60,43 @@ func TestUninstallWhenInstalledButNotDesired(t *testing.T) {
 	}
 }
 
+func TestKeepUnavailableInstalledDesired(t *testing.T) {
+	// The Skill was installed, then removed upstream (absent from available).
+	// It is still desired (kept). Reconcile must not emit a doomed Reinstall —
+	// there is nothing to reinstall from — so the last-known copy stays put.
+	installed := []domain.Installation{{SkillName: "deploy", SourceName: "srcA", TargetName: "t1", Fingerprint: "old"}}
+	p := Reconcile(
+		[]Cell{{Skill: "deploy", Source: "srcA", Target: "t1"}},
+		nil, // deploy no longer offered by any Source
+		installed,
+		nil,
+	)
+	ops(t, p, 0)
+}
+
+func TestUninstallUnavailableWhenDeselected(t *testing.T) {
+	// Same removed-upstream Skill, now deselected: it is installed but not
+	// desired, so it uninstalls (uninstall needs no Source to run).
+	installed := []domain.Installation{{SkillName: "deploy", SourceName: "srcA", TargetName: "t1", Fingerprint: "old"}}
+	p := Reconcile(nil, nil, installed, nil)
+	ops(t, p, 1)
+	if p.Operations[0].Kind != Uninstall {
+		t.Errorf("kind = %q, want uninstall", p.Operations[0].Kind)
+	}
+}
+
+func TestSkipUnavailableDesiredNotInstalled(t *testing.T) {
+	// Desired but neither installed nor available: nothing to do, and certainly
+	// no doomed Install.
+	p := Reconcile(
+		[]Cell{{Skill: "deploy", Source: "srcA", Target: "t1"}},
+		nil,
+		nil,
+		nil,
+	)
+	ops(t, p, 0)
+}
+
 func TestReinstallWhenSourceSwitched(t *testing.T) {
 	installed := []domain.Installation{{SkillName: "deploy", SourceName: "srcA", TargetName: "t1", Fingerprint: "h1"}}
 	p := Reconcile(

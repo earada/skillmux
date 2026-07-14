@@ -124,6 +124,12 @@ type AvailableSkill struct {
 	// Whether each is a Dependency or a Suggestion is decided against Config by
 	// the SkillGraph; here they are just the raw resolved references.
 	Refs []string `json:"refs,omitempty"`
+	// Unavailable marks a last-known row: a Skill still recorded as installed in
+	// the Manifest but no longer offered by any current Source. It has no Dir or
+	// Fingerprint to install from; it is surfaced only so the row stays visible
+	// and the user can keep it as-is or uninstall it. Never persisted to the
+	// catalog cache — it is derived from the Manifest at render time.
+	Unavailable bool `json:"-"`
 }
 
 // Catalog is the result of a Refresh: the available Skills, the Revision of each
@@ -236,6 +242,10 @@ func resolveRefs(skills []AvailableSkill) {
 // and the Target's current path.
 func (e *Engine) Status(cat Catalog) []CellStatus {
 	targets := e.targetPaths()
+	available := map[skillKey]bool{}
+	for _, sk := range cat.Skills {
+		available[skillKey{sk.Name, sk.Source}] = true
+	}
 	var out []CellStatus
 	for _, t := range e.Config.DomainTargets() {
 		for _, sk := range cat.Skills {
@@ -247,8 +257,52 @@ func (e *Engine) Status(cat Catalog) []CellStatus {
 			})
 		}
 	}
+	// Surface installations whose Skill is no longer offered by any Source, so
+	// the row does not silently vanish from the matrix after an upstream removal
+	// (skillmux-crl). Such a cell can never be reinstalled, only kept or
+	// uninstalled, so it gets its own StatusUnavailable rather than one of the
+	// installed states that would imply a reinstall.
+	for _, in := range e.Manifest.Installations {
+		if available[skillKey{in.SkillName, in.SourceName}] {
+			continue
+		}
+		out = append(out, CellStatus{
+			SkillName:  in.SkillName,
+			SourceName: in.SourceName,
+			TargetName: in.TargetName,
+			Status:     domain.StatusUnavailable,
+		})
+	}
 	return out
 }
+
+// UnavailableSkills returns a last-known row for every distinct (Skill, Source)
+// recorded as installed in the Manifest but no longer offered by any Source in
+// cat. The matrix appends these to the available rows so a Skill removed
+// upstream after install stays visible and reconcilable (skillmux-crl).
+func (e *Engine) UnavailableSkills(cat Catalog) []AvailableSkill {
+	available := map[skillKey]bool{}
+	for _, sk := range cat.Skills {
+		available[skillKey{sk.Name, sk.Source}] = true
+	}
+	seen := map[skillKey]bool{}
+	var out []AvailableSkill
+	for _, in := range e.Manifest.Installations {
+		k := skillKey{in.SkillName, in.SourceName}
+		if available[k] || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, AvailableSkill{
+			Name:        in.SkillName,
+			Source:      in.SourceName,
+			Unavailable: true,
+		})
+	}
+	return out
+}
+
+type skillKey struct{ name, source string }
 
 func (e *Engine) cellStatus(sk AvailableSkill, target, targetPath string) domain.Status {
 	in, ok := e.Manifest.Find(target, sk.Name)

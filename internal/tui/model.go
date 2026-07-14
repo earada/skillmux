@@ -199,12 +199,17 @@ func (m Model) onRefreshed(cat engine.Catalog) Model {
 	m.installed = map[skillRef]bool{} // present in at least one Target
 	for _, c := range cells {
 		m.status[statusKey{c.SkillName, c.SourceName, c.TargetName}] = c.Status
-		if c.Status == domain.StatusUpToDate || c.Status == domain.StatusUpdateAvailable {
+		switch c.Status {
+		case domain.StatusUpToDate, domain.StatusUpdateAvailable, domain.StatusUnavailable:
 			m.installed[skillRef{c.SkillName, c.SourceName}] = true
 		}
 	}
 
+	// A Skill removed upstream after install has no catalog row but is still in
+	// the Manifest; append its last-known row so it stays visible and the user
+	// can keep or uninstall it (skillmux-crl).
 	skills := append([]engine.AvailableSkill(nil), cat.Skills...)
+	skills = append(skills, m.eng.UnavailableSkills(cat)...)
 	sort.Slice(skills, func(i, j int) bool {
 		// Group into sections — installed, then not-installed, then deprecated
 		// — so the matrix can rule a line between each. Within a section, keep

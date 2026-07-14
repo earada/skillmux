@@ -127,4 +127,9 @@ const (
 	// StatusConflict means two Skills from different Sources share this Name
 	// (and thus install folder) in this Target.
 	StatusConflict Status = "conflict"
+	// StatusUnavailable means the Skill is installed (recorded in the Manifest)
+	// but no longer offered by any current Source — it disappeared upstream
+	// after install. The last-known row stays visible so the user can keep it
+	// as-is or uninstall it; it can never be reinstalled while unavailable.
+	StatusUnavailable Status = "unavailable"
 )

@@ -73,8 +73,10 @@ type Plan struct {
 // lands at the new path; a nil or partial map simply skips that check.
 func Reconcile(desired []Cell, available []AvailableSkill, installed []domain.Installation, targetPaths map[string]string) Plan {
 	fingerprints := map[key]string{} // (name, source) -> current fingerprint
+	availableSet := map[key]bool{}   // (name, source) currently offered by a Source
 	for _, a := range available {
 		fingerprints[key{a.Name, a.Source}] = a.Fingerprint
+		availableSet[key{a.Name, a.Source}] = true
 	}
 
 	// Detect conflicts: within one Target, the same Skill name desired from
@@ -115,6 +117,15 @@ func Reconcile(desired []Cell, available []AvailableSkill, installed []domain.In
 	// Installs / reinstalls / no-ops for everything desired.
 	for ts, c := range desiredAt {
 		in, isInstalled := installedAt[ts]
+		// A desired Skill no longer offered by any Source cannot be installed or
+		// reinstalled — the files to copy are gone. If it is already installed we
+		// keep the last-known copy in place (no operation) so the row stays
+		// reconcilable and the user can uninstall it deliberately; if it is not
+		// installed there is simply nothing we can do, so we skip it rather than
+		// emit a doomed Install/Reinstall that Apply would fail on.
+		if !availableSet[key{c.Skill, c.Source}] {
+			continue
+		}
 		if !isInstalled {
 			plan.Operations = append(plan.Operations, Operation{
 				Kind: Install, SkillName: c.Skill, SourceName: c.Source, TargetName: c.Target,

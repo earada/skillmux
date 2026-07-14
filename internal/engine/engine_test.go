@@ -192,6 +192,60 @@ func TestApplyEmptyDesiredUninstalls(t *testing.T) {
 	}
 }
 
+func TestUpstreamRemovalKeepsInstalledReconcilable(t *testing.T) {
+	// Install "deploy", then remove it from its Source (it disappears upstream).
+	e, targetPath, skillDir, _ := newEnv(t)
+	cat := e.Refresh()
+	if _, err := e.Apply(e.Preview(cell(), cat), apply.Options{}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if err := os.RemoveAll(skillDir); err != nil {
+		t.Fatal(err)
+	}
+	cat = e.Refresh() // catalog no longer offers deploy
+	if len(cat.Skills) != 0 {
+		t.Fatalf("expected empty catalog after removal, got %+v", cat.Skills)
+	}
+
+	// The installed row is surfaced as a last-known, unavailable row.
+	un := e.UnavailableSkills(cat)
+	if len(un) != 1 || un[0].Name != "deploy" || !un[0].Unavailable {
+		t.Fatalf("UnavailableSkills = %+v, want one unavailable deploy", un)
+	}
+	// Status reports it as unavailable rather than an installed state that would
+	// imply a reinstall.
+	var got domain.Status
+	for _, c := range e.Status(cat) {
+		if c.SkillName == "deploy" && c.TargetName == "cc" {
+			got = c.Status
+		}
+	}
+	if got != domain.StatusUnavailable {
+		t.Fatalf("status = %q, want unavailable", got)
+	}
+
+	// Kept (still desired): Preview must not emit a doomed Reinstall, and Apply
+	// must be a no-op that leaves the files in place.
+	pre := e.Preview(cell(), cat)
+	if len(pre.Plan.Operations) != 0 {
+		t.Fatalf("keeping an unavailable skill should be a no-op, got %+v", pre.Plan.Operations)
+	}
+	if _, err := e.Apply(pre, apply.Options{}); err != nil {
+		t.Fatalf("apply keep: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetPath, "deploy")); err != nil {
+		t.Errorf("kept skill should still be installed: %v", err)
+	}
+
+	// Deselected: it uninstalls cleanly even though its Source is gone.
+	if _, err := e.Apply(e.Preview(nil, cat), apply.Options{}); err != nil {
+		t.Fatalf("apply uninstall: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetPath, "deploy")); !os.IsNotExist(err) {
+		t.Error("deselected unavailable skill should have been uninstalled")
+	}
+}
+
 func TestRefreshCapturesSourceErrors(t *testing.T) {
 	cfg := &config.Config{
 		Sources: []config.SourceEntry{{Name: "broken", Location: filepath.Join(t.TempDir(), "does-not-exist")}},
