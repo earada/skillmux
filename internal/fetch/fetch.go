@@ -21,6 +21,8 @@ package fetch
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
@@ -125,6 +127,13 @@ func (f *Fetcher) fetchGitHub(src domain.Source, skipCheckout bool) (string, err
 			return "", fmt.Errorf("source %q: %w", src.Name, err)
 		}
 	} else {
+		// No clone at the collision-free path. A directory may still linger at
+		// the legacy sanitize()-based path from an older skillmux; drop it so it
+		// neither shadows the new clone nor leaks disk. Best-effort: a failure
+		// here must not block the fresh clone.
+		if legacy := f.legacyCacheDirFor(src); legacy != "" && legacy != dest {
+			_ = os.RemoveAll(legacy)
+		}
 		if err := freshClone(timeout, src.Location, dest, src.Branch); err != nil {
 			return "", fmt.Errorf("source %q: %w", src.Name, err)
 		}
@@ -332,8 +341,20 @@ func (f *Fetcher) Revision(src domain.Source) (domain.Revision, bool) {
 }
 
 // CacheDirFor returns the cache directory a Source is cloned into, or "" for
-// Sources that are not cached (local Sources resolve in place).
+// Sources that are not cached (local Sources resolve in place). The directory
+// name is collision-free across distinct Source names (see cacheKey).
 func (f *Fetcher) CacheDirFor(src domain.Source) string {
+	if src.Kind != domain.SourceGitHub {
+		return ""
+	}
+	return filepath.Join(f.CacheDir, "github", cacheKey(src.Name))
+}
+
+// legacyCacheDirFor returns the pre-cacheKey directory a Source would have been
+// cloned into by an older skillmux (a bare sanitize() of the name), or "" for
+// uncached Sources. Used only to invalidate leftovers during migration; the
+// scheme collided across distinct names and must never be used for new clones.
+func (f *Fetcher) legacyCacheDirFor(src domain.Source) string {
 	if src.Kind != domain.SourceGitHub {
 		return ""
 	}
@@ -386,6 +407,48 @@ func applySubpath(base, subpath string) (string, error) {
 	return filepath.Join(base, clean), nil
 }
 
+// cacheKey derives a collision-free directory name from a Source name. Names are
+// user-facing Config keys and may hold any punctuation or Unicode, so they can't
+// be path components directly. A readable, sanitized slug keeps the directory
+// recognisable, while a hash of the exact name bytes guarantees distinct names
+// never share a directory — covering names that differ only in punctuation
+// (team.one vs team/one, which sanitize()d identically), only in case (Team vs
+// team, which would otherwise collide on a case-insensitive filesystem), or only
+// in stripped Unicode. The hash's lowercase-hex suffix keeps the two apart even
+// when their slugs collide on a case-insensitive filesystem.
+func cacheKey(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return slug(name) + "-" + hex.EncodeToString(sum[:8])
+}
+
+// slug renders name as a readable, filesystem-safe label for the cache directory
+// prefix. It is cosmetic only — collision resistance comes from the hash suffix
+// cacheKey appends — so lossy mapping of punctuation/Unicode to underscore and a
+// length cap are both fine. An empty result (a name of only stripped runes)
+// yields "src" so the directory never starts with a bare separator.
+func slug(name string) string {
+	mapped := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, name)
+	const maxSlug = 48
+	if len(mapped) > maxSlug {
+		mapped = mapped[:maxSlug]
+	}
+	if mapped == "" {
+		return "src"
+	}
+	return mapped
+}
+
+// sanitize reproduces the legacy pre-cacheKey directory name. Retained only so
+// legacyCacheDirFor can locate and invalidate stale clones written by an older
+// skillmux; never use it to name a new clone (it collided across distinct
+// names — the bug cacheKey fixes).
 func sanitize(name string) string {
 	return strings.Map(func(r rune) rune {
 		switch {
