@@ -150,12 +150,8 @@ func (m Model) leaveSkillView() (tea.Model, tea.Cmd) {
 	if !m.eng.EndView() {
 		return m, nil
 	}
-	if m.refreshing {
-		m.pendingRefresh = true
-		return m, nil
-	}
-	m.refreshing = true
-	return m, refreshCmd(m.eng)
+	m, cmd := m.requestRefresh()
+	return m, cmd
 }
 
 // navLen is the length of the skill view's navigable list: its outgoing edges

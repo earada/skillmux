@@ -28,6 +28,14 @@ type Engine struct {
 	configPath   string
 	manifestPath string
 
+	// opMu serialises the filesystem- and shared-state-mutating operations —
+	// Refresh, Apply, and every config/cache mutation — so at most one runs at a
+	// time. The TUI dispatches Refresh and Apply on background goroutines and
+	// performs config/cache edits on its own loop, so without this lock two of
+	// them could concurrently rewrite the same clone, destination, Config slice
+	// or Manifest (skillmux-3vj). Held for the whole duration of each operation.
+	opMu sync.Mutex
+
 	// mu guards the skill-view coordination below, which a background Refresh
 	// (running in its own goroutine) reads while the UI loop writes it.
 	mu sync.Mutex
@@ -153,6 +161,8 @@ type CellStatus struct {
 // fingerprint of each discovered Skill. Errors from one Source do not stop the
 // others; they are collected in Catalog.SourceErrors.
 func (e *Engine) Refresh() Catalog {
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
 	cat := Catalog{
 		Revisions:    map[string]domain.Revision{},
 		SourceErrors: map[string]error{},
@@ -359,6 +369,8 @@ func (e *Engine) Preview(desired []reconcile.Cell, cat Catalog) Preview {
 // catalog snapshot the Preview pinned — and persists the Manifest. The error is
 // non-nil only if persisting fails; per-operation outcomes live in the Report.
 func (e *Engine) Apply(pre Preview, opts apply.Options) (apply.Report, error) {
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
 	rep := apply.Apply(pre.Plan, pre.targets, pre.resolved, e.Manifest, opts)
 	if err := manifest.Save(e.manifestPath, e.Manifest); err != nil {
 		return rep, err

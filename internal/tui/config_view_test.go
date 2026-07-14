@@ -32,7 +32,11 @@ func newConfigModel(t *testing.T, cfg *config.Config) (Model, *engine.Engine, st
 	t.Helper()
 	configPath := filepath.Join(t.TempDir(), "config.toml")
 	e := engine.New(cfg, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: t.TempDir()}, configPath, filepath.Join(t.TempDir(), "m.json"))
-	return New(e), e, configPath
+	m := New(e)
+	// Simulate the startup Refresh having landed: config is reachable only when
+	// no command is in flight (skillmux-3vj), so clear the in-flight flag New sets.
+	m.refreshing = false
+	return m, e, configPath
 }
 
 func key(kt tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: kt} }

@@ -151,6 +151,26 @@ func (m Model) Init() tea.Cmd {
 	return refreshCmd(m.eng)
 }
 
+// busy reports whether a filesystem-mutating Engine command — a Refresh or an
+// Apply — is currently in flight. While busy the matrix refuses to open the
+// Plan, enter config, or start another command, so at most one such command
+// runs at a time and none starts from in-flight state (skillmux-3vj).
+func (m Model) busy() bool { return m.refreshing || m.applying }
+
+// requestRefresh starts a Refresh, or — when a command is already in flight —
+// records that one is wanted so refreshDoneMsg/applyDoneMsg runs it once the
+// slot frees. This coalesces a burst of refresh requests (startup refresh +
+// config exit, a repeated 'r', a deferred skill-view checkout) into at most one
+// queued rerun rather than launching concurrent Refreshes.
+func (m Model) requestRefresh() (Model, tea.Cmd) {
+	if m.busy() {
+		m.pendingRefresh = true
+		return m, nil
+	}
+	m.refreshing = true
+	return m, refreshCmd(m.eng)
+}
+
 // Update handles messages. It is split by message type; key handling further
 // dispatches on the current view mode.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -179,6 +199,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.report = msg.rep
 		m.applyErr = msg.err
 		m.mode = modeResult
+		if m.pendingRefresh {
+			// A Refresh was requested while the Apply ran; run it now the slot is
+			// free so the result screen's next refresh isn't lost.
+			m.pendingRefresh = false
+			m.refreshing = true
+			return m, refreshCmd(m.eng)
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -302,19 +329,25 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		m.markClosure()
 	case "r":
-		if !m.refreshing {
-			m.refreshing = true
-			return m, refreshCmd(m.eng)
-		}
+		return m.requestRefresh()
 	case "c":
-		m.cfgCursor = 0
-		m.cfgMsg = ""
-		m.mode = modeConfig
+		// A config edit races a running Refresh (it rewrites Config while Refresh
+		// scans it), so config is reachable only when no command is in flight.
+		if !m.busy() {
+			m.cfgCursor = 0
+			m.cfgMsg = ""
+			m.mode = modeConfig
+		}
 	case "v":
 		return m.enterSkillView(), nil
 	case "p", "enter":
-		m.preview = m.eng.Preview(selected(m.desired), m.cat)
-		m.mode = modePlan
+		// Don't open the Plan (and thus a possible Apply) off in-flight state: a
+		// running Refresh is rewriting the catalog and a running Apply the
+		// Manifest, either of which would make the previewed Plan stale.
+		if !m.busy() {
+			m.preview = m.eng.Preview(selected(m.desired), m.cat)
+			m.mode = modePlan
+		}
 	}
 	m.clampCursor()
 	return m, nil
@@ -355,6 +388,9 @@ func (m *Model) clearFilter() {
 func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "enter":
+		if m.applying {
+			return m, nil // an Apply is already in flight; never start a second
+		}
 		if len(m.preview.Plan.Operations) == 0 {
 			m.mode = modeMatrix
 			return m, nil
@@ -384,6 +420,9 @@ func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) onOverwriteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y":
+		if m.applying {
+			return m, nil // an Apply is already in flight; never start a second
+		}
 		opts := apply.Options{ConfirmOverwrite: approveOverwrites(m.preview.Collisions)}
 		m.applying = true
 		m.mode = modeMatrix
@@ -400,10 +439,11 @@ func (m Model) onResultKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q":
 		return m, tea.Quit
 	default:
-		// Dismiss results and refresh so statuses reflect what changed.
+		// Dismiss results and refresh so statuses reflect what changed, coalescing
+		// with any refresh already queued behind the just-finished Apply.
 		m.mode = modeMatrix
-		m.refreshing = true
-		return m, refreshCmd(m.eng)
+		m, cmd := m.requestRefresh()
+		return m, cmd
 	}
 }
 
