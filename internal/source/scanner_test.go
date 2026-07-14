@@ -3,6 +3,7 @@ package source
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -179,6 +180,46 @@ deprecated: false
 	}
 	if d := byName["explicitfalse"]; d.deprecated {
 		t.Errorf("explicitfalse = %+v, want not deprecated", d)
+	}
+}
+
+func TestScanRejectsNamesThatEscapeTarget(t *testing.T) {
+	// A Skill's name is later joined onto a Target directory, so a name with
+	// separators or dot components could resolve outside it. The scanner must
+	// reject such names before they enter the catalog. See skillmux-aps.
+	cases := map[string]string{
+		"parent-traversal":  "../victim",
+		"nested-traversal":  "foo/../../victim",
+		"backslash":         `..\victim`,
+		"forward-slash":     "sub/dir",
+		"dot":               ".",
+		"dotdot":            "..",
+		"absolute":          "/etc/passwd",
+		"leading-space":     " deploy",
+		"trailing-space":    "deploy ",
+		"control-character": "dep\x00loy",
+		"newline":           "dep\nloy",
+	}
+	for label, name := range cases {
+		t.Run(label, func(t *testing.T) {
+			root := t.TempDir()
+			writeSkill(t, filepath.Join(root, "skill"), "---\nname: "+strconv.Quote(name)+"\n---\nbody")
+			if _, err := Scan(root, "s"); err == nil {
+				t.Fatalf("expected error for skill name %q, got none", name)
+			}
+		})
+	}
+}
+
+func TestScanAcceptsCanonicalNames(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "skill"), "---\nname: my-skill.v2\n---\nbody")
+	got, err := Scan(root, "s")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "my-skill.v2" {
+		t.Fatalf("expected single skill named my-skill.v2, got %+v", got)
 	}
 }
 

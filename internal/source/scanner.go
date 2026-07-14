@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	yaml "gopkg.in/yaml.v3"
 
@@ -138,5 +139,41 @@ func parseFrontmatter(path string) (frontmatter, error) {
 	if strings.TrimSpace(fm.Name) == "" {
 		return fm, errors.New("frontmatter missing required 'name'")
 	}
+	if err := validateSkillName(fm.Name); err != nil {
+		return fm, err
+	}
 	return fm, nil
+}
+
+// validateSkillName requires a Skill's name to be a canonical single path
+// component before it enters the catalog. The name is later joined onto a
+// Target directory (see apply.install/uninstall), so a name carrying separators
+// or dot components — e.g. "../victim" — could resolve outside the Target and
+// let an install create, or a later uninstall recursively delete, arbitrary
+// sibling paths. Rejecting such names here is the primary defence; apply keeps a
+// containment backstop for anything that still slips through. See skillmux-aps.
+func validateSkillName(name string) error {
+	if name != strings.TrimSpace(name) {
+		return fmt.Errorf("skill name %q has surrounding whitespace", name)
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("skill name %q is a dot path component", name)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("skill name %q contains a path separator", name)
+	}
+	if filepath.IsAbs(name) || filepath.VolumeName(name) != "" {
+		return fmt.Errorf("skill name %q is an absolute path", name)
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("skill name %q contains a control character", name)
+		}
+	}
+	// Backstop: after all the checks above, the name must still be exactly its
+	// own last path element — a single, canonical component.
+	if filepath.Base(name) != name {
+		return fmt.Errorf("skill name %q is not a single path component", name)
+	}
+	return nil
 }

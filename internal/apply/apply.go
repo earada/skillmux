@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/earada/skillmux/internal/domain"
@@ -163,7 +164,10 @@ func install(op reconcile.Operation, targets map[string]string, resolved map[Ski
 		return fmt.Errorf("skill %q not available from source %q", op.SkillName, op.SourceName)
 	}
 
-	dest := filepath.Join(targetPath, op.SkillName)
+	dest, err := destWithin(targetPath, op.SkillName)
+	if err != nil {
+		return err
+	}
 	if _, collision := collides(op, targets, man); collision {
 		// Safety invariant (ADR 0002): never clobber a folder we did not install
 		// without explicit confirmation. Same predicate the pre-flight uses.
@@ -193,12 +197,33 @@ func uninstall(op reconcile.Operation, targets map[string]string, man *manifest.
 	if !ok {
 		return fmt.Errorf("unknown target %q", op.TargetName)
 	}
-	dest := filepath.Join(targetPath, op.SkillName)
+	dest, err := destWithin(targetPath, op.SkillName)
+	if err != nil {
+		return err
+	}
 	if err := os.RemoveAll(dest); err != nil {
 		return fmt.Errorf("removing skill: %w", err)
 	}
 	man.Remove(op.TargetName, op.SkillName)
 	return nil
+}
+
+// destWithin joins skillName onto targetPath and verifies the result is a
+// proper subpath of targetPath. It is the write-time backstop to the scanner's
+// name validation (see skillmux-aps): even if a malformed name reaches Apply,
+// no RemoveAll or copy may touch a path at or outside the configured Target. A
+// name resolving to the Target itself is rejected too, so a stray "." can never
+// clear the whole Target.
+func destWithin(targetPath, skillName string) (string, error) {
+	dest := filepath.Join(targetPath, skillName)
+	rel, err := filepath.Rel(targetPath, dest)
+	if err != nil {
+		return "", fmt.Errorf("skill %q: resolving destination: %w", skillName, err)
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("skill %q resolves outside target %s", skillName, targetPath)
+	}
+	return dest, nil
 }
 
 func exists(path string) bool {

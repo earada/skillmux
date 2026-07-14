@@ -193,6 +193,90 @@ func TestBestEffortContinuesAfterFailure(t *testing.T) {
 	}
 }
 
+func TestInstallRefusesNameThatEscapesTarget(t *testing.T) {
+	// Defensive backstop (skillmux-aps): even if a malformed name reached Apply,
+	// an install must not create anything outside the Target.
+	src := makeSource(t, "payload")
+	parent := t.TempDir()
+	targetPath := filepath.Join(parent, "target")
+	if err := os.MkdirAll(targetPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	man := &manifest.Manifest{}
+
+	rep := Apply(
+		reconcile.Plan{Operations: []reconcile.Operation{
+			{Kind: reconcile.Install, SkillName: "../victim", SourceName: "s", TargetName: "t"},
+		}},
+		map[string]string{"t": targetPath},
+		map[SkillID]ResolvedSkill{{Source: "s", Skill: "../victim"}: {Dir: src, Fingerprint: "fp"}},
+		man, Options{},
+	)
+
+	if rep.AllOK() {
+		t.Fatal("expected refusal for name escaping the target")
+	}
+	if _, err := os.Stat(filepath.Join(parent, "victim")); !os.IsNotExist(err) {
+		t.Error("install must not create a sibling outside the target")
+	}
+	if _, ok := man.Find("t", "../victim"); ok {
+		t.Error("nothing should be recorded for a refused install")
+	}
+}
+
+func TestUninstallRefusesNameThatEscapesTarget(t *testing.T) {
+	// A source-controlled name must not let uninstall RemoveAll a sibling path.
+	parent := t.TempDir()
+	targetPath := filepath.Join(parent, "target")
+	if err := os.MkdirAll(targetPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(parent, "victim")
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(victim, "keep.txt"), []byte("precious"), 0o644)
+	man := &manifest.Manifest{}
+
+	rep := Apply(
+		reconcile.Plan{Operations: []reconcile.Operation{
+			{Kind: reconcile.Uninstall, SkillName: "../victim", SourceName: "s", TargetName: "t"},
+		}},
+		map[string]string{"t": targetPath},
+		nil, man, Options{},
+	)
+
+	if rep.AllOK() {
+		t.Fatal("expected refusal for name escaping the target")
+	}
+	if _, err := os.Stat(filepath.Join(victim, "keep.txt")); err != nil {
+		t.Errorf("uninstall must not touch a sibling outside the target: %v", err)
+	}
+}
+
+func TestUninstallRefusesNameResolvingToTargetItself(t *testing.T) {
+	// A "." name resolves to the Target itself; RemoveAll on it would wipe the
+	// whole Target. destWithin must reject it.
+	targetPath := t.TempDir()
+	os.WriteFile(filepath.Join(targetPath, "keep.txt"), []byte("precious"), 0o644)
+	man := &manifest.Manifest{}
+
+	rep := Apply(
+		reconcile.Plan{Operations: []reconcile.Operation{
+			{Kind: reconcile.Uninstall, SkillName: ".", SourceName: "s", TargetName: "t"},
+		}},
+		map[string]string{"t": targetPath},
+		nil, man, Options{},
+	)
+
+	if rep.AllOK() {
+		t.Fatal("expected refusal for name resolving to the target itself")
+	}
+	if _, err := os.Stat(filepath.Join(targetPath, "keep.txt")); err != nil {
+		t.Errorf("uninstall must not clear the target itself: %v", err)
+	}
+}
+
 func installation(skill, target, source, fp string) domain.Installation {
 	return domain.Installation{SkillName: skill, TargetName: target, SourceName: source, Fingerprint: fp}
 }
