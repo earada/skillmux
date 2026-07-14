@@ -125,9 +125,11 @@ func clearCacheResult(cached bool, err error, name string) string {
 func (m Model) leaveConfig() (tea.Model, tea.Cmd) {
 	m.targets = m.eng.Config.DomainTargets()
 	m.mode = modeMatrix
-	m.refreshing = true
 	m.clampCursor()
-	return m, refreshCmd(m.eng)
+	// Coalesce: if a Refresh is already in flight (e.g. the startup one), queue
+	// the re-scan instead of launching a second, concurrent Refresh (skillmux-3vj).
+	m, cmd := m.requestRefresh()
+	return m, cmd
 }
 
 func (m Model) onFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

@@ -69,11 +69,13 @@ var (
 		domain.StatusUpToDate:        lipgloss.NewStyle().Foreground(cGreen),
 		domain.StatusUpdateAvailable: lipgloss.NewStyle().Foreground(cAmber),
 		domain.StatusConflict:        lipgloss.NewStyle().Foreground(cRed),
+		domain.StatusUnavailable:     lipgloss.NewStyle().Foreground(cRed),
 	}
 	statusGlyph = map[domain.Status]string{
 		domain.StatusNotInstalled:    "·",
 		domain.StatusUpToDate:        "=",
 		domain.StatusUpdateAvailable: "↑",
 		domain.StatusConflict:        "!",
+		domain.StatusUnavailable:     "×",
 	}
 )

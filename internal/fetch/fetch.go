@@ -9,25 +9,54 @@
 // repos work through the user's own credential helper or SSH keys, and an
 // `git@github.com:owner/repo` SSH Location clones directly. Skillmux never
 // reads or stores a token. See ADR 0006 (which supersedes ADR 0004).
+//
+// Every git invocation is bounded by a timeout (defaultGitTimeout, overridable
+// via Fetcher.Timeout) and runs with all interactive credential prompts
+// disabled, so a stalled clone/fetch — an SSH host-key or passphrase prompt, a
+// dead credential helper, or a hung network/DNS lookup — cannot pin the
+// background Refresh in a permanently refreshing state; it returns a timeout
+// error naming the Source and action instead.
 package fetch
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/earada/skillmux/internal/domain"
 	"github.com/earada/skillmux/internal/paths"
 )
 
+// defaultGitTimeout bounds every individual git invocation. It is the fail-fast
+// deadline that keeps a background Refresh from hanging forever when a git
+// operation stalls (SSH host-key / passphrase prompt, an unreachable host, a
+// dead credential helper, or a hung DNS lookup). Generous enough for a slow
+// clone over a poor connection, short enough that the TUI recovers on its own.
+const defaultGitTimeout = 2 * time.Minute
+
 // Fetcher resolves Sources, caching GitHub clones under CacheDir.
 type Fetcher struct {
 	// CacheDir is where GitHub Sources are cloned.
 	CacheDir string
+	// Timeout bounds each git invocation; a zero value uses defaultGitTimeout.
+	// Overridable mainly so tests can pin a short deadline.
+	Timeout time.Duration
+}
+
+// gitTimeout is the per-invocation git deadline, defaulting when unset.
+func (f *Fetcher) gitTimeout() time.Duration {
+	if f.Timeout > 0 {
+		return f.Timeout
+	}
+	return defaultGitTimeout
 }
 
 // Fetch returns the local directory holding the Source's Skills, with Subpath
@@ -83,24 +112,56 @@ func (f *Fetcher) fetchGitHub(src domain.Source, skipCheckout bool) (string, err
 		return "", fmt.Errorf("source %q: %w", src.Name, err)
 	}
 
+	timeout := f.gitTimeout()
 	dest := f.CacheDirFor(src)
 	if isGitRepo(dest) {
-		if err := updateClone(dest, src.Branch, skipCheckout); err != nil {
+		// The cache dir is keyed by Source name, so an existing clone may be
+		// left over from a previous Location under the same name. Point origin
+		// at the current Location (a no-op when unchanged) before updating, so a
+		// Refresh after a Location edit fetches the new repository rather than
+		// silently serving stale content from the old one.
+		if err := syncOrigin(timeout, dest, src.Location); err != nil {
+			return "", fmt.Errorf("source %q: %w", src.Name, err)
+		}
+		if err := updateClone(timeout, dest, src.Branch, skipCheckout); err != nil {
 			return "", fmt.Errorf("source %q: %w", src.Name, err)
 		}
 	} else {
-		if err := freshClone(src.Location, dest, src.Branch); err != nil {
+		// No clone at the collision-free path. A directory may still linger at
+		// the legacy sanitize()-based path from an older skillmux; drop it so it
+		// neither shadows the new clone nor leaks disk. Best-effort: a failure
+		// here must not block the fresh clone.
+		if legacy := f.legacyCacheDirFor(src); legacy != "" && legacy != dest {
+			_ = os.RemoveAll(legacy)
+		}
+		if err := freshClone(timeout, src.Location, dest, src.Branch); err != nil {
 			return "", fmt.Errorf("source %q: %w", src.Name, err)
 		}
 	}
 	return applySubpath(dest, src.Subpath)
 }
 
+// syncOrigin makes the clone's origin remote point at repoURL, updating it when
+// the Source Location has changed since the clone was created. The stored URL is
+// compared verbatim against the value git recorded at clone time, so an
+// unchanged Location leaves the remote untouched.
+func syncOrigin(timeout time.Duration, dest, repoURL string) error {
+	current, err := runGit(timeout, dest, "remote", "get-url", "origin")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(current) == repoURL {
+		return nil
+	}
+	_, err = runGit(timeout, dest, "remote", "set-url", "origin", repoURL)
+	return err
+}
+
 // freshClone removes any stale contents at dest and shallow-clones the ref into
 // it. An empty ref clones the repository's default branch. A commit SHA cannot
 // be cloned with --branch, so it is fetched explicitly into a freshly
 // initialised repo instead (GitHub serves a reachable SHA over a shallow fetch).
-func freshClone(repoURL, dest, ref string) error {
+func freshClone(timeout time.Duration, repoURL, dest, ref string) error {
 	if err := os.RemoveAll(dest); err != nil {
 		return err
 	}
@@ -111,21 +172,21 @@ func freshClone(repoURL, dest, ref string) error {
 		if err := os.MkdirAll(dest, 0o755); err != nil {
 			return err
 		}
-		if _, err := runGit(dest, "init", "-q"); err != nil {
+		if _, err := runGit(timeout, dest, "init", "-q"); err != nil {
 			return err
 		}
-		if _, err := runGit(dest, "remote", "add", "origin", repoURL); err != nil {
+		if _, err := runGit(timeout, dest, "remote", "add", "origin", repoURL); err != nil {
 			return err
 		}
 		// No working tree to protect on a fresh clone, so always check out.
-		return updateClone(dest, ref, false)
+		return updateClone(timeout, dest, ref, false)
 	}
 	args := []string{"clone", "--depth", "1"}
 	if ref != "" {
 		args = append(args, "--branch", ref, "--single-branch")
 	}
 	args = append(args, "--", repoURL, dest)
-	_, err := runGit("", args...)
+	_, err := runGit(timeout, "", args...)
 	return err
 }
 
@@ -151,41 +212,54 @@ func looksLikeCommitSHA(ref string) bool {
 // works regardless of the clone's configured refspec, so this also handles a
 // changed Branch. With skipCheckout the objects are updated but the working tree
 // is left untouched, so a later checkout can apply the update when it is safe.
-func updateClone(dest, ref string, skipCheckout bool) error {
+func updateClone(timeout time.Duration, dest, ref string, skipCheckout bool) error {
 	fetchRef := ref
 	if fetchRef == "" {
 		fetchRef = "HEAD"
 	}
-	if _, err := runGit(dest, "fetch", "--depth", "1", "origin", fetchRef); err != nil {
+	if _, err := runGit(timeout, dest, "fetch", "--depth", "1", "origin", fetchRef); err != nil {
 		return err
 	}
 	if skipCheckout {
 		return nil
 	}
-	if _, err := runGit(dest, "reset", "--hard", "FETCH_HEAD"); err != nil {
+	if _, err := runGit(timeout, dest, "reset", "--hard", "FETCH_HEAD"); err != nil {
 		return err
 	}
 	// Drop files that vanished upstream or were left untracked.
-	if _, err := runGit(dest, "clean", "-ffd"); err != nil {
+	if _, err := runGit(timeout, dest, "clean", "-ffd"); err != nil {
 		return err
 	}
 	return nil
 }
 
-// runGit runs a git command (in workdir, or the process cwd when empty) and
-// returns its stdout. Interactive prompts are disabled so a private repo
-// without usable credentials fails fast instead of hanging the TUI. git's auth
-// (credential helper, SSH) is left untouched.
-func runGit(workdir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+// runGit runs a git command (in workdir, or the process cwd when empty) under a
+// timeout and returns its stdout. The command runs in its own process group so
+// the deadline tears down git and anything it spawned (notably ssh) rather than
+// leaking a stalled process. Every interactive credential path is disabled so a
+// private repo without usable credentials — or an SSH host-key/passphrase
+// prompt — fails fast instead of hanging the TUI; git's non-interactive auth
+// (credential helper, ready SSH keys) is left untouched. A deadline hit yields a
+// timeout error naming the git action; callers wrap it with the Source name.
+func runGit(timeout time.Duration, workdir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if workdir != "" {
 		cmd.Dir = workdir
 	}
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = nonInteractiveGitEnv()
+	startNewProcessGroup(cmd)
+
 	var out, stderr bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("git %s: timed out after %s", strings.Join(args, " "), timeout)
+	}
+	if err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = err.Error()
@@ -193,6 +267,35 @@ func runGit(workdir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), msg)
 	}
 	return out.String(), nil
+}
+
+// nonInteractiveGitEnv is the process environment with every interactive
+// credential prompt forced off: GIT_TERMINAL_PROMPT=0 suppresses git's own
+// username/password and host-key prompts, and ssh runs with BatchMode=yes so it
+// fails fast instead of blocking on a host-key confirmation or key passphrase. A
+// user's existing GIT_SSH_COMMAND is preserved (BatchMode is appended to it) so
+// custom SSH configuration still applies; any inherited GIT_TERMINAL_PROMPT is
+// dropped in favour of our value.
+func nonInteractiveGitEnv() []string {
+	base := os.Environ()
+	sshCmd := "ssh"
+	env := make([]string, 0, len(base)+2)
+	for _, kv := range base {
+		switch {
+		case strings.HasPrefix(kv, "GIT_TERMINAL_PROMPT="):
+			// Dropped; replaced with our canonical value below.
+		case strings.HasPrefix(kv, "GIT_SSH_COMMAND="):
+			if v := strings.TrimPrefix(kv, "GIT_SSH_COMMAND="); strings.TrimSpace(v) != "" {
+				sshCmd = v
+			}
+		default:
+			env = append(env, kv)
+		}
+	}
+	return append(env,
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_SSH_COMMAND="+sshCmd+" -oBatchMode=yes",
+	)
 }
 
 // isGitRepo reports whether dir already holds a git clone.
@@ -214,7 +317,8 @@ func (f *Fetcher) Revision(src domain.Source) (domain.Revision, bool) {
 	if !isGitRepo(dir) {
 		return domain.Revision{}, false
 	}
-	sha, err := runGit(dir, "rev-parse", "--short", "HEAD")
+	timeout := f.gitTimeout()
+	sha, err := runGit(timeout, dir, "rev-parse", "--short", "HEAD")
 	if err != nil {
 		return domain.Revision{}, false
 	}
@@ -227,7 +331,7 @@ func (f *Fetcher) Revision(src domain.Source) (domain.Revision, bool) {
 	case ref == "":
 		// Default branch: resolve the checked-out branch name, but leave it
 		// empty when HEAD is detached so the label is just the short SHA.
-		if out, err := runGit(dir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+		if out, err := runGit(timeout, dir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 			if b := strings.TrimSpace(out); b != "HEAD" {
 				ref = b
 			}
@@ -237,8 +341,20 @@ func (f *Fetcher) Revision(src domain.Source) (domain.Revision, bool) {
 }
 
 // CacheDirFor returns the cache directory a Source is cloned into, or "" for
-// Sources that are not cached (local Sources resolve in place).
+// Sources that are not cached (local Sources resolve in place). The directory
+// name is collision-free across distinct Source names (see cacheKey).
 func (f *Fetcher) CacheDirFor(src domain.Source) string {
+	if src.Kind != domain.SourceGitHub {
+		return ""
+	}
+	return filepath.Join(f.CacheDir, "github", cacheKey(src.Name))
+}
+
+// legacyCacheDirFor returns the pre-cacheKey directory a Source would have been
+// cloned into by an older skillmux (a bare sanitize() of the name), or "" for
+// uncached Sources. Used only to invalidate leftovers during migration; the
+// scheme collided across distinct names and must never be used for new clones.
+func (f *Fetcher) legacyCacheDirFor(src domain.Source) string {
 	if src.Kind != domain.SourceGitHub {
 		return ""
 	}
@@ -291,6 +407,48 @@ func applySubpath(base, subpath string) (string, error) {
 	return filepath.Join(base, clean), nil
 }
 
+// cacheKey derives a collision-free directory name from a Source name. Names are
+// user-facing Config keys and may hold any punctuation or Unicode, so they can't
+// be path components directly. A readable, sanitized slug keeps the directory
+// recognisable, while a hash of the exact name bytes guarantees distinct names
+// never share a directory — covering names that differ only in punctuation
+// (team.one vs team/one, which sanitize()d identically), only in case (Team vs
+// team, which would otherwise collide on a case-insensitive filesystem), or only
+// in stripped Unicode. The hash's lowercase-hex suffix keeps the two apart even
+// when their slugs collide on a case-insensitive filesystem.
+func cacheKey(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return slug(name) + "-" + hex.EncodeToString(sum[:8])
+}
+
+// slug renders name as a readable, filesystem-safe label for the cache directory
+// prefix. It is cosmetic only — collision resistance comes from the hash suffix
+// cacheKey appends — so lossy mapping of punctuation/Unicode to underscore and a
+// length cap are both fine. An empty result (a name of only stripped runes)
+// yields "src" so the directory never starts with a bare separator.
+func slug(name string) string {
+	mapped := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, name)
+	const maxSlug = 48
+	if len(mapped) > maxSlug {
+		mapped = mapped[:maxSlug]
+	}
+	if mapped == "" {
+		return "src"
+	}
+	return mapped
+}
+
+// sanitize reproduces the legacy pre-cacheKey directory name. Retained only so
+// legacyCacheDirFor can locate and invalidate stale clones written by an older
+// skillmux; never use it to name a new clone (it collided across distinct
+// names — the bug cacheKey fixes).
 func sanitize(name string) string {
 	return strings.Map(func(r rune) rune {
 		switch {

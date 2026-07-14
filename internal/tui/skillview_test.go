@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	styles "github.com/charmbracelet/glamour/styles"
 
 	"github.com/earada/skillmux/internal/domain"
 )
@@ -281,5 +282,65 @@ func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// --- glamour style resolution (no per-open terminal probe) ---------------
+
+// TestResolveGlamourStyleHonorsEnv verifies the GLAMOUR_STYLE override: a valid
+// value wins verbatim, while an empty, unknown, or "auto" value falls back to
+// background detection (never the blocking "auto" probe path).
+func TestResolveGlamourStyleHonorsEnv(t *testing.T) {
+	for _, want := range []string{styles.DarkStyle, styles.LightStyle, styles.NoTTYStyle} {
+		t.Setenv("GLAMOUR_STYLE", want)
+		if got := resolveGlamourStyle(); got != want {
+			t.Fatalf("GLAMOUR_STYLE=%q: resolveGlamourStyle()=%q, want %q", want, got, want)
+		}
+	}
+	// Empty, unknown, and "auto" must all fall back to a concrete detected style
+	// (never "auto", which would re-enable glamour's blocking terminal probe).
+	for _, env := range []string{"", "not-a-real-style", styles.AutoStyle} {
+		t.Setenv("GLAMOUR_STYLE", env)
+		got := resolveGlamourStyle()
+		if got == styles.AutoStyle || got == "" {
+			t.Fatalf("GLAMOUR_STYLE=%q: resolveGlamourStyle()=%q, want a concrete style", env, got)
+		}
+		if _, ok := styles.DefaultStyles[got]; !ok {
+			t.Fatalf("GLAMOUR_STYLE=%q: resolveGlamourStyle()=%q is not a known style", env, got)
+		}
+	}
+}
+
+// TestRenderMarkdownAppliesStyle proves the threaded style actually reaches
+// glamour: dark and light both render successfully and differ, and neither
+// takes the auto-probe path.
+func TestRenderMarkdownAppliesStyle(t *testing.T) {
+	const md = "# Heading\n\nSome **bold** text and `code`.\n"
+	dark, err := renderMarkdown(md, 80, styles.DarkStyle)
+	if err != nil {
+		t.Fatalf("dark render: %v", err)
+	}
+	light, err := renderMarkdown(md, 80, styles.LightStyle)
+	if err != nil {
+		t.Fatalf("light render: %v", err)
+	}
+	if dark == "" || light == "" {
+		t.Fatalf("empty render output (dark=%q light=%q)", dark, light)
+	}
+	if dark == light {
+		t.Fatalf("dark and light renders are identical; style param not applied")
+	}
+}
+
+// TestNewResolvesMarkdownStyle guards the resolve-once-at-startup wiring: New
+// must populate mdStyle with a concrete, known style so the per-open path never
+// falls back to a live probe.
+func TestNewResolvesMarkdownStyle(t *testing.T) {
+	m := New(testEngine(t, "cc"))
+	if m.mdStyle == "" || m.mdStyle == styles.AutoStyle {
+		t.Fatalf("New().mdStyle=%q, want a concrete style", m.mdStyle)
+	}
+	if _, ok := styles.DefaultStyles[m.mdStyle]; !ok {
+		t.Fatalf("New().mdStyle=%q is not a known glamour style", m.mdStyle)
 	}
 }

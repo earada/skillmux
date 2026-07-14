@@ -18,6 +18,7 @@ func TestInstallWhenDesiredAndNotInstalled(t *testing.T) {
 		[]Cell{{Skill: "deploy", Source: "srcA", Target: "t1"}},
 		[]AvailableSkill{{Name: "deploy", Source: "srcA", Fingerprint: "h1"}},
 		nil,
+		nil,
 	)
 	ops(t, p, 1)
 	if p.Operations[0].Kind != Install {
@@ -31,6 +32,7 @@ func TestNoOpWhenUpToDate(t *testing.T) {
 		[]Cell{{Skill: "deploy", Source: "srcA", Target: "t1"}},
 		[]AvailableSkill{{Name: "deploy", Source: "srcA", Fingerprint: "h1"}},
 		installed,
+		nil,
 	)
 	ops(t, p, 0)
 }
@@ -41,6 +43,7 @@ func TestReinstallWhenUpstreamDrift(t *testing.T) {
 		[]Cell{{Skill: "deploy", Source: "srcA", Target: "t1"}},
 		[]AvailableSkill{{Name: "deploy", Source: "srcA", Fingerprint: "new"}},
 		installed,
+		nil,
 	)
 	ops(t, p, 1)
 	if p.Operations[0].Kind != Reinstall || p.Operations[0].Reason != ReasonUpdateAvailable {
@@ -50,11 +53,48 @@ func TestReinstallWhenUpstreamDrift(t *testing.T) {
 
 func TestUninstallWhenInstalledButNotDesired(t *testing.T) {
 	installed := []domain.Installation{{SkillName: "deploy", SourceName: "srcA", TargetName: "t1", Fingerprint: "h1"}}
-	p := Reconcile(nil, []AvailableSkill{{Name: "deploy", Source: "srcA", Fingerprint: "h1"}}, installed)
+	p := Reconcile(nil, []AvailableSkill{{Name: "deploy", Source: "srcA", Fingerprint: "h1"}}, installed, nil)
 	ops(t, p, 1)
 	if p.Operations[0].Kind != Uninstall {
 		t.Errorf("kind = %q, want uninstall", p.Operations[0].Kind)
 	}
+}
+
+func TestKeepUnavailableInstalledDesired(t *testing.T) {
+	// The Skill was installed, then removed upstream (absent from available).
+	// It is still desired (kept). Reconcile must not emit a doomed Reinstall —
+	// there is nothing to reinstall from — so the last-known copy stays put.
+	installed := []domain.Installation{{SkillName: "deploy", SourceName: "srcA", TargetName: "t1", Fingerprint: "old"}}
+	p := Reconcile(
+		[]Cell{{Skill: "deploy", Source: "srcA", Target: "t1"}},
+		nil, // deploy no longer offered by any Source
+		installed,
+		nil,
+	)
+	ops(t, p, 0)
+}
+
+func TestUninstallUnavailableWhenDeselected(t *testing.T) {
+	// Same removed-upstream Skill, now deselected: it is installed but not
+	// desired, so it uninstalls (uninstall needs no Source to run).
+	installed := []domain.Installation{{SkillName: "deploy", SourceName: "srcA", TargetName: "t1", Fingerprint: "old"}}
+	p := Reconcile(nil, nil, installed, nil)
+	ops(t, p, 1)
+	if p.Operations[0].Kind != Uninstall {
+		t.Errorf("kind = %q, want uninstall", p.Operations[0].Kind)
+	}
+}
+
+func TestSkipUnavailableDesiredNotInstalled(t *testing.T) {
+	// Desired but neither installed nor available: nothing to do, and certainly
+	// no doomed Install.
+	p := Reconcile(
+		[]Cell{{Skill: "deploy", Source: "srcA", Target: "t1"}},
+		nil,
+		nil,
+		nil,
+	)
+	ops(t, p, 0)
 }
 
 func TestReinstallWhenSourceSwitched(t *testing.T) {
@@ -63,11 +103,48 @@ func TestReinstallWhenSourceSwitched(t *testing.T) {
 		[]Cell{{Skill: "deploy", Source: "srcB", Target: "t1"}},
 		[]AvailableSkill{{Name: "deploy", Source: "srcB", Fingerprint: "h1"}},
 		installed,
+		nil,
 	)
 	ops(t, p, 1)
 	if p.Operations[0].Kind != Reinstall || p.Operations[0].Reason != ReasonSourceChanged {
 		t.Errorf("got %+v, want reinstall/source-changed", p.Operations[0])
 	}
+}
+
+func TestReinstallWhenTargetPathMoved(t *testing.T) {
+	// Same name, same fingerprint, but the Target now points at a different
+	// path than the one recorded at install time: a Reinstall is due so the
+	// Skill lands at the new path, even though nothing upstream changed.
+	installed := []domain.Installation{{
+		SkillName: "deploy", SourceName: "srcA", TargetName: "t1",
+		Fingerprint: "h1", Path: "/old/path",
+	}}
+	p := Reconcile(
+		[]Cell{{Skill: "deploy", Source: "srcA", Target: "t1"}},
+		[]AvailableSkill{{Name: "deploy", Source: "srcA", Fingerprint: "h1"}},
+		installed,
+		map[string]string{"t1": "/new/path"},
+	)
+	ops(t, p, 1)
+	if p.Operations[0].Kind != Reinstall || p.Operations[0].Reason != ReasonTargetMoved {
+		t.Errorf("got %+v, want reinstall/target-moved", p.Operations[0])
+	}
+}
+
+func TestNoMoveReinstallForLegacyInstallWithoutRecordedPath(t *testing.T) {
+	// An Installation recorded before Path existed (empty Path) must not be
+	// flagged as moved just because the current Target has a path — otherwise
+	// every pre-upgrade install would spuriously reinstall.
+	installed := []domain.Installation{{
+		SkillName: "deploy", SourceName: "srcA", TargetName: "t1", Fingerprint: "h1",
+	}}
+	p := Reconcile(
+		[]Cell{{Skill: "deploy", Source: "srcA", Target: "t1"}},
+		[]AvailableSkill{{Name: "deploy", Source: "srcA", Fingerprint: "h1"}},
+		installed,
+		map[string]string{"t1": "/some/path"},
+	)
+	ops(t, p, 0)
 }
 
 func TestConflictWhenSameNameTwoSourcesOneTarget(t *testing.T) {
@@ -80,6 +157,7 @@ func TestConflictWhenSameNameTwoSourcesOneTarget(t *testing.T) {
 			{Name: "deploy", Source: "srcA", Fingerprint: "h1"},
 			{Name: "deploy", Source: "srcB", Fingerprint: "h2"},
 		},
+		nil,
 		nil,
 	)
 	// A conflict is reported, and neither install is emitted.
@@ -103,8 +181,8 @@ func TestPlanIsDeterministicallyOrdered(t *testing.T) {
 		{Skill: "a", Source: "s", Target: "t1"},
 	}
 	avail := []AvailableSkill{{Name: "a", Source: "s", Fingerprint: "x"}, {Name: "b", Source: "s", Fingerprint: "x"}}
-	p1 := Reconcile(desired, avail, nil)
-	p2 := Reconcile(desired, avail, nil)
+	p1 := Reconcile(desired, avail, nil, nil)
+	p2 := Reconcile(desired, avail, nil, nil)
 	if len(p1.Operations) != len(p2.Operations) {
 		t.Fatal("nondeterministic length")
 	}

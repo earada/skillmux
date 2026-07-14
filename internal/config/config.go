@@ -69,20 +69,56 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
-// Save writes the Config to path, creating parent directories as needed.
+// Save atomically writes the Config to path, creating parent directories as
+// needed. It encodes to a same-directory temp file, flushes it to disk, then
+// renames over path so a crash, short write, or interruption cannot destroy the
+// user-owned source of truth: the previous Config either survives intact or is
+// replaced by a fully written one. Existing file permissions are preserved.
 func Save(path string, c *Config) error {
 	if err := c.validate(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating config dir: %w", err)
 	}
 	data, err := toml.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("encoding config: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+
+	// Preserve the existing file's permissions; default to 0644 for a new file.
+	perm := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		perm = info.Mode().Perm()
+	}
+
+	// Write to a temp file in the same directory so the final rename is atomic
+	// (a cross-directory rename is not).
+	tmp, err := os.CreateTemp(dir, ".config-*.toml.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp config: %w", err)
+	}
+	tmpPath := tmp.Name()
+	// Clean up the temp file on any failure before the rename succeeds.
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("writing config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("flushing config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing config: %w", err)
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		return fmt.Errorf("setting config permissions: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("replacing config: %w", err)
 	}
 	return nil
 }

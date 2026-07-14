@@ -191,6 +191,44 @@ func TestFetchGitHubUpdatesExistingClone(t *testing.T) {
 	}
 }
 
+func TestFetchGitHubRefetchesAfterLocationChange(t *testing.T) {
+	requireGit(t)
+	repoA := initRepo(t, map[string]string{"SKILL.md": "from-A"})
+	repoB := initRepo(t, map[string]string{"SKILL.md": "from-B"})
+	f := &Fetcher{CacheDir: t.TempDir()}
+
+	// First fetch points the Source at repository A.
+	if _, err := f.Fetch(domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: repoA}); err != nil {
+		t.Fatalf("Fetch A: %v", err)
+	}
+
+	// Edit the same-named Source so its Location now points at repository B and
+	// refetch without clearing the cache.
+	srcB := domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: repoB}
+	dir, err := f.Fetch(srcB)
+	if err != nil {
+		t.Fatalf("Fetch B: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil || string(got) != "from-B" {
+		t.Errorf("after Location change SKILL.md = %q, err %v; want %q", got, err, "from-B")
+	}
+
+	// origin must now name repository B, and the Revision must match B's tip.
+	if origin := gitOut(t, dir, "remote", "get-url", "origin"); origin != repoB {
+		t.Errorf("origin = %q, want %q", origin, repoB)
+	}
+	rev, ok := f.Revision(srcB)
+	if !ok {
+		t.Fatal("expected a revision after Location change")
+	}
+	wantSHA := gitOut(t, repoB, "rev-parse", "--short", "HEAD")
+	if rev.ShortSHA != wantSHA {
+		t.Errorf("Revision.ShortSHA = %q, want repository B's tip %q", rev.ShortSHA, wantSHA)
+	}
+}
+
 func TestFetchGitHubAppliesSubpath(t *testing.T) {
 	requireGit(t)
 	repo := initRepo(t, map[string]string{
@@ -388,6 +426,116 @@ func TestClearCacheIsNoOpForLocalSource(t *testing.T) {
 	}
 	if cached {
 		t.Error("ClearCache(local) = true, want false (not cached)")
+	}
+}
+
+// ghSrc names a GitHub Source; a helper to keep the collision tables terse.
+func ghSrc(name string) domain.Source {
+	return domain.Source{Name: name, Kind: domain.SourceGitHub, Location: "https://github.com/o/r"}
+}
+
+func TestCacheDirForDistinctNamesDistinctDirs(t *testing.T) {
+	f := &Fetcher{CacheDir: t.TempDir()}
+	// Each pair once collided under the old sanitize() scheme (or would collide
+	// on a case-insensitive filesystem): punctuation that mapped to underscore,
+	// case-only differences, and Unicode stripped to underscore.
+	pairs := [][2]string{
+		{"team.one", "team/one"}, // '.' and '/' both became '_'
+		{"team.one", "team_one"}, // '.' mapped onto a literal underscore
+		{"a b", "a-b"},           // space vs dash after mapping
+		{"Team", "team"},         // case-only (collides on case-insensitive FS)
+		{"café", "cafe_"},        // Unicode stripped to underscore
+		{"€", "$"},               // wholly-stripped names must still differ
+	}
+	for _, p := range pairs {
+		a := f.CacheDirFor(ghSrc(p[0]))
+		b := f.CacheDirFor(ghSrc(p[1]))
+		if a == b {
+			t.Errorf("CacheDirFor(%q) and CacheDirFor(%q) collide: both %q", p[0], p[1], a)
+		}
+		// Distinct even when compared case-insensitively (case-insensitive FS).
+		if strings.EqualFold(filepath.Base(a), filepath.Base(b)) {
+			t.Errorf("CacheDirFor(%q)=%q and CacheDirFor(%q)=%q collide case-insensitively", p[0], a, p[1], b)
+		}
+	}
+}
+
+func TestCacheDirForIsStable(t *testing.T) {
+	f := &Fetcher{CacheDir: t.TempDir()}
+	src := ghSrc("team.one")
+	if a, b := f.CacheDirFor(src), f.CacheDirFor(src); a != b {
+		t.Errorf("CacheDirFor not stable: %q != %q", a, b)
+	}
+}
+
+func TestCacheDirForReadableSlug(t *testing.T) {
+	f := &Fetcher{CacheDir: t.TempDir()}
+	// The directory keeps a recognisable prefix from the name for humans.
+	dir := filepath.Base(f.CacheDirFor(ghSrc("team.one")))
+	if !strings.HasPrefix(dir, "team_one-") {
+		t.Errorf("cache dir %q missing readable %q prefix", dir, "team_one-")
+	}
+	// An empty name still yields a non-empty, separator-safe directory.
+	empty := filepath.Base(f.CacheDirFor(ghSrc("")))
+	if !strings.HasPrefix(empty, "src-") {
+		t.Errorf("empty name cache dir %q, want %q prefix", empty, "src-")
+	}
+}
+
+func TestFetchGitHubDistinctNamesDoNotShareClone(t *testing.T) {
+	requireGit(t)
+	repoA := initRepo(t, map[string]string{"SKILL.md": "from-A"})
+	repoB := initRepo(t, map[string]string{"SKILL.md": "from-B"})
+	f := &Fetcher{CacheDir: t.TempDir()}
+
+	// team.one and team/one are distinct Config names that once shared a clone
+	// dir; each must now get its own repository content.
+	dirA, err := f.Fetch(domain.Source{Name: "team.one", Kind: domain.SourceGitHub, Location: repoA})
+	if err != nil {
+		t.Fatalf("Fetch A: %v", err)
+	}
+	dirB, err := f.Fetch(domain.Source{Name: "team/one", Kind: domain.SourceGitHub, Location: repoB})
+	if err != nil {
+		t.Fatalf("Fetch B: %v", err)
+	}
+	if dirA == dirB {
+		t.Fatalf("distinct Sources shared clone dir %q", dirA)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dirA, "SKILL.md")); string(got) != "from-A" {
+		t.Errorf("team.one SKILL.md = %q, want from-A", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dirB, "SKILL.md")); string(got) != "from-B" {
+		t.Errorf("team/one SKILL.md = %q, want from-B", got)
+	}
+}
+
+func TestFetchGitHubInvalidatesLegacyCacheDir(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t, map[string]string{"SKILL.md": "fresh"})
+	f := &Fetcher{CacheDir: t.TempDir()}
+	src := domain.Source{Name: "team.one", Kind: domain.SourceGitHub, Location: repo}
+
+	// Simulate an older skillmux having cloned under the legacy sanitize() path.
+	legacy := f.legacyCacheDirFor(src)
+	if err := os.MkdirAll(filepath.Join(legacy, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, legacy, "SKILL.md", "stale")
+
+	dir, err := f.Fetch(src)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	// The fresh clone lands at the new collision-free path with current content.
+	if dir == legacy {
+		t.Fatalf("fetch reused legacy path %q", legacy)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "SKILL.md")); string(got) != "fresh" {
+		t.Errorf("SKILL.md = %q, want fresh", got)
+	}
+	// The stale legacy directory is cleaned up rather than left to leak disk.
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Errorf("legacy cache dir not invalidated, stat err = %v", err)
 	}
 }
 

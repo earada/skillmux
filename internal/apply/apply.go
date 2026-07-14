@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/earada/skillmux/internal/domain"
@@ -163,7 +164,10 @@ func install(op reconcile.Operation, targets map[string]string, resolved map[Ski
 		return fmt.Errorf("skill %q not available from source %q", op.SkillName, op.SourceName)
 	}
 
-	dest := filepath.Join(targetPath, op.SkillName)
+	dest, err := destWithin(targetPath, op.SkillName)
+	if err != nil {
+		return err
+	}
 	if _, collision := collides(op, targets, man); collision {
 		// Safety invariant (ADR 0002): never clobber a folder we did not install
 		// without explicit confirmation. Same predicate the pre-flight uses.
@@ -172,19 +176,99 @@ func install(op reconcile.Operation, targets map[string]string, resolved map[Ski
 		}
 	}
 
-	if err := os.RemoveAll(dest); err != nil {
-		return fmt.Errorf("clearing destination: %w", err)
-	}
-	if err := copyDir(rs.Dir, dest); err != nil {
-		return fmt.Errorf("copying skill: %w", err)
+	// Capture any prior Installation before we overwrite the manifest entry, so
+	// a Target that was re-pointed since install can have its old-path folder
+	// cleaned up once the copy to the new path succeeds.
+	prev, hadPrev := man.Find(op.TargetName, op.SkillName)
+
+	// Non-destructive install (skillmux-4zr): stage the copy in a sibling temp
+	// folder and only swap it into place once it is complete. A read/copy
+	// failure never touches the live destination, so a failed install leaves an
+	// untracked folder untouched and a failed reinstall preserves the prior
+	// installation together with its Manifest entry.
+	if err := stageAndSwap(rs.Dir, targetPath, dest); err != nil {
+		return err
 	}
 	man.Put(domain.Installation{
 		SkillName:   op.SkillName,
 		TargetName:  op.TargetName,
 		SourceName:  op.SourceName,
+		Path:        targetPath,
 		Fingerprint: rs.Fingerprint,
 		InstalledAt: now().UTC(),
 	})
+
+	// The Target's Path was edited since install: the copy above landed at the
+	// new path, so remove the stale copy at the old path. This is not data loss
+	// — the content is authoritative in the Source and now present at the new
+	// path — it just keeps a re-pointed Target from leaving orphaned folders.
+	// Best-effort: the manifest already reflects the new path, so a failure
+	// here never leaves Status lying about being up-to-date.
+	if hadPrev && prev.Path != "" && prev.Path != targetPath {
+		if oldDest, err := destWithin(prev.Path, op.SkillName); err == nil {
+			_ = os.RemoveAll(oldDest)
+		}
+	}
+	return nil
+}
+
+// Seams so fault-injection tests can simulate a mid-copy read failure or a
+// failed atomic swap without special filesystem states. Production wiring is
+// the real filesystem; tests swap these and restore them.
+var (
+	copyTree   = copyDir
+	renamePath = os.Rename
+)
+
+// stageAndSwap copies src into a temporary folder that is a sibling of dest
+// (same filesystem, so the final move is atomic) and only then replaces dest.
+// If the copy fails, the staging folder is removed and dest is left exactly as
+// it was. If the swap fails after a prior installation was moved aside, the
+// prior installation is restored. The invariant: dest is only ever mutated by
+// a rename of a fully-materialised copy, never by a partial write.
+func stageAndSwap(src, targetPath, dest string) error {
+	staging, err := os.MkdirTemp(targetPath, ".skillmux-stage-*")
+	if err != nil {
+		return fmt.Errorf("creating staging dir: %w", err)
+	}
+	// MkdirTemp creates 0o700; match copyDir's directory permissions so a
+	// staged install is indistinguishable from a direct one.
+	if err := os.Chmod(staging, 0o755); err != nil {
+		_ = os.RemoveAll(staging)
+		return fmt.Errorf("preparing staging dir: %w", err)
+	}
+	if err := copyTree(src, staging); err != nil {
+		_ = os.RemoveAll(staging)
+		return fmt.Errorf("copying skill: %w", err)
+	}
+
+	// Ensure the parent of a nested destination exists before the swap.
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		_ = os.RemoveAll(staging)
+		return fmt.Errorf("preparing destination: %w", err)
+	}
+
+	// Move any existing installation aside so a failed swap can be rolled back.
+	var backup string
+	if exists(dest) {
+		backup = staging + ".old"
+		if err := renamePath(dest, backup); err != nil {
+			_ = os.RemoveAll(staging)
+			return fmt.Errorf("clearing destination: %w", err)
+		}
+	}
+
+	if err := renamePath(staging, dest); err != nil {
+		if backup != "" {
+			_ = renamePath(backup, dest) // roll back to the prior installation
+		}
+		_ = os.RemoveAll(staging)
+		return fmt.Errorf("installing skill: %w", err)
+	}
+
+	if backup != "" {
+		_ = os.RemoveAll(backup)
+	}
 	return nil
 }
 
@@ -193,12 +277,33 @@ func uninstall(op reconcile.Operation, targets map[string]string, man *manifest.
 	if !ok {
 		return fmt.Errorf("unknown target %q", op.TargetName)
 	}
-	dest := filepath.Join(targetPath, op.SkillName)
+	dest, err := destWithin(targetPath, op.SkillName)
+	if err != nil {
+		return err
+	}
 	if err := os.RemoveAll(dest); err != nil {
 		return fmt.Errorf("removing skill: %w", err)
 	}
 	man.Remove(op.TargetName, op.SkillName)
 	return nil
+}
+
+// destWithin joins skillName onto targetPath and verifies the result is a
+// proper subpath of targetPath. It is the write-time backstop to the scanner's
+// name validation (see skillmux-aps): even if a malformed name reaches Apply,
+// no RemoveAll or copy may touch a path at or outside the configured Target. A
+// name resolving to the Target itself is rejected too, so a stray "." can never
+// clear the whole Target.
+func destWithin(targetPath, skillName string) (string, error) {
+	dest := filepath.Join(targetPath, skillName)
+	rel, err := filepath.Rel(targetPath, dest)
+	if err != nil {
+		return "", fmt.Errorf("skill %q: resolving destination: %w", skillName, err)
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("skill %q resolves outside target %s", skillName, targetPath)
+	}
+	return dest, nil
 }
 
 func exists(path string) bool {

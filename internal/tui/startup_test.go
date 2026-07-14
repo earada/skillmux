@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/earada/skillmux/internal/apply"
 	"github.com/earada/skillmux/internal/config"
 	"github.com/earada/skillmux/internal/engine"
 	"github.com/earada/skillmux/internal/fetch"
@@ -36,6 +37,83 @@ func TestNewRendersInstantlyFromCachedCatalog(t *testing.T) {
 	}
 	if !m.refreshing {
 		t.Error("a background refresh should still be pending after startup")
+	}
+}
+
+func TestCachedInstalledSkillRemovedUpstreamStaysReconcilable(t *testing.T) {
+	// Reproduces skillmux-crl: a skill is installed and cached, then removed from
+	// its Source. On the next refresh its catalog row is gone but the manifest
+	// still records it. The row must stay visible and reconcilable rather than
+	// vanishing into a doomed Reinstall the user cannot cancel.
+	srcRoot := t.TempDir()
+	sdir := filepath.Join(srcRoot, "deploy")
+	os.MkdirAll(sdir, 0o755)
+	os.WriteFile(filepath.Join(sdir, "SKILL.md"), []byte("---\nname: deploy\ndescription: d\n---\nv1"), 0o644)
+
+	cacheDir := t.TempDir()
+	targetPath := t.TempDir()
+	manifestPath := filepath.Join(t.TempDir(), "m.json")
+	cfg := &config.Config{
+		Targets: []config.TargetEntry{{Name: "cc", Path: targetPath}},
+		Sources: []config.SourceEntry{{Name: "local", Location: srcRoot}},
+	}
+
+	// First run: refresh (writes catalog cache) and install deploy.
+	e1 := engine.New(cfg, &manifest.Manifest{}, &fetch.Fetcher{CacheDir: cacheDir}, "", manifestPath)
+	cat := e1.Refresh()
+	if _, err := e1.Apply(e1.Preview([]reconcile.Cell{{Skill: "deploy", Source: "local", Target: "cc"}}, cat), apply.Options{}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	// Skill disappears upstream, then the app restarts over the same cache and
+	// manifest: the cached row makes deploy start installed+desired.
+	os.RemoveAll(sdir)
+	man, err := manifest.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2 := engine.New(cfg, man, &fetch.Fetcher{CacheDir: cacheDir}, "", manifestPath)
+	m := New(e2) // renders from cache: deploy present, desired=true
+	desired := reconcile.Cell{Skill: "deploy", Source: "local", Target: "cc"}
+	if !m.desired[desired] {
+		t.Fatal("cached install should start desired")
+	}
+
+	// Background refresh lands: deploy is gone from the catalog.
+	m = m.onRefreshed(e2.Refresh())
+
+	// The row survives as an unavailable, still-installed entry.
+	var row *engine.AvailableSkill
+	for i := range m.skills {
+		if m.skills[i].Name == "deploy" {
+			row = &m.skills[i]
+		}
+	}
+	if row == nil || !row.Unavailable {
+		t.Fatalf("deploy row should survive as unavailable, skills = %+v", m.skills)
+	}
+	if !m.installed[skillRef{"deploy", "local"}] {
+		t.Error("unavailable skill should still count as installed (visible section)")
+	}
+	if !m.desired[desired] {
+		t.Error("keeping the unavailable skill: desired must stay true")
+	}
+	// Preview keeps it — no doomed Reinstall.
+	if pre := e2.Preview(selected(m.desired), m.cat); len(pre.Plan.Operations) != 0 {
+		t.Fatalf("keeping should be a no-op, got %+v", pre.Plan.Operations)
+	}
+
+	// The user can deselect the (now visible) row to uninstall it.
+	m.desired[desired] = false
+	pre := e2.Preview(selected(m.desired), m.cat)
+	if len(pre.Plan.Operations) != 1 || pre.Plan.Operations[0].Kind != reconcile.Uninstall {
+		t.Fatalf("deselect should yield one uninstall, got %+v", pre.Plan.Operations)
+	}
+	if _, err := e2.Apply(pre, apply.Options{}); err != nil {
+		t.Fatalf("uninstall apply: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetPath, "deploy")); !os.IsNotExist(err) {
+		t.Error("skill should be uninstalled after deselect + apply")
 	}
 }
 

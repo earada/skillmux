@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
+	styles "github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/earada/skillmux/internal/domain"
@@ -150,12 +151,8 @@ func (m Model) leaveSkillView() (tea.Model, tea.Cmd) {
 	if !m.eng.EndView() {
 		return m, nil
 	}
-	if m.refreshing {
-		m.pendingRefresh = true
-		return m, nil
-	}
-	m.refreshing = true
-	return m, refreshCmd(m.eng)
+	m, cmd := m.requestRefresh()
+	return m, cmd
 }
 
 // navLen is the length of the skill view's navigable list: its outgoing edges
@@ -246,16 +243,16 @@ func (m Model) openFile(relPath string) (tea.Model, tea.Cmd) {
 	m.fileContent = fileContent{}
 	m.fileVP = viewport.Model{}
 	m.mode = modeFileView
-	return m, renderFileCmd(path, relPath, w)
+	return m, renderFileCmd(path, relPath, w, m.mdStyle)
 }
 
 // renderFileCmd reads and renders a file in a goroutine, posting the result as a
 // fileRenderedMsg. classifyFile and the glamour markdown render (the expensive
 // step) run here, off the UI loop — this is what keeps the file view responsive.
-func renderFileCmd(path, relPath string, width int) tea.Cmd {
+func renderFileCmd(path, relPath string, width int, style string) tea.Cmd {
 	return func() tea.Msg {
 		fc := classifyFile(path)
-		return fileRenderedMsg{path: relPath, content: fc, body: renderBody(fc, width)}
+		return fileRenderedMsg{path: relPath, content: fc, body: renderBody(fc, width, style)}
 	}
 }
 
@@ -341,7 +338,7 @@ func (m *Model) clampTreeCursor() {
 func (m Model) treeMetaLines() []string {
 	lines := []string{skillLabel(m.viewSkill, false)}
 	if m.viewSkill.Description != "" {
-		lines = append(lines, dimStyle.Render(m.viewSkill.Description))
+		lines = append(lines, dimStyle.Render(sanitize(m.viewSkill.Description)))
 	}
 	for _, t := range m.targets {
 		st := m.status[statusKey{m.viewSkill.Name, m.viewSkill.Source, t.Name}]
@@ -351,9 +348,9 @@ func (m Model) treeMetaLines() []string {
 		}
 		lines = append(lines, "  "+statusStyles[st].Render(glyph+" "+statusText(st))+"  "+dimStyle.Render(t.Name))
 	}
-	lines = append(lines, dimStyle.Render(m.viewSkill.Dir))
+	lines = append(lines, dimStyle.Render(sanitize(m.viewSkill.Dir)))
 	if rev, ok := m.cat.Revisions[m.viewSkill.Source]; ok {
-		lines = append(lines, dimStyle.Render(rev.Label()))
+		lines = append(lines, dimStyle.Render(sanitize(rev.Label())))
 	}
 	return lines
 }
@@ -368,6 +365,8 @@ func statusText(s domain.Status) string {
 		return "update available"
 	case domain.StatusConflict:
 		return "conflict"
+	case domain.StatusUnavailable:
+		return "unavailable (removed upstream)"
 	default:
 		return "not installed"
 	}
@@ -419,32 +418,57 @@ func (m Model) fileViewerSize() (w, h int) {
 // file, raw text for any other text file, or a descriptive note otherwise. The
 // glamour render is the expensive step, so renderBody is called off the UI loop
 // (see renderFileCmd), never from the synchronous Update path.
-func renderBody(fc fileContent, width int) string {
+func renderBody(fc fileContent, width int, style string) string {
 	switch fc.kind {
 	case fileBinary:
 		return dimStyle.Render(fmt.Sprintf("(binary, %d bytes)", fc.size))
 	case fileTooLarge:
 		return dimStyle.Render(fmt.Sprintf("(file too large, %d bytes)", fc.size))
 	case fileError:
-		return errStyle.Render("(could not read: " + fc.err.Error() + ")")
+		return errStyle.Render("(could not read: " + sanitize(fc.err.Error()) + ")")
 	default:
+		// fc.text is Source-controlled; make it inert before it reaches Glamour
+		// or the raw viewport so no escape sequence in the file can act.
+		text := sanitizeMultiline(fc.text)
 		if fc.isMarkdown {
-			if out, err := renderMarkdown(fc.text, width); err == nil {
+			if out, err := renderMarkdown(text, width, style); err == nil {
 				return out
 			}
 			// Fall back to raw text if glamour fails for any reason.
 		}
-		return fc.text
+		return text
 	}
 }
 
+// resolveGlamourStyle decides which glamour style markdown renders with, once,
+// away from the per-open hot path. It honours a valid GLAMOUR_STYLE override
+// (except "auto", which would re-enable glamour's blocking terminal probe);
+// otherwise it derives dark/light from lipgloss's background detection. The
+// only terminal probe happens here, and only when there is no explicit style —
+// so callers must invoke this before Bubble Tea's alt-screen owns stdin (see
+// New), never per file open.
+func resolveGlamourStyle() string {
+	if s := strings.TrimSpace(os.Getenv("GLAMOUR_STYLE")); s != "" && s != styles.AutoStyle {
+		if _, ok := styles.DefaultStyles[s]; ok {
+			return s
+		}
+		// Unknown value: ignore it and fall back to detection.
+	}
+	if lipgloss.HasDarkBackground() {
+		return styles.DarkStyle
+	}
+	return styles.LightStyle
+}
+
 // renderMarkdown styles markdown for the terminal with glamour, wrapping to the
-// viewport width so lines don't overrun the panel.
-func renderMarkdown(md string, width int) (string, error) {
+// viewport width so lines don't overrun the panel. style is a concrete glamour
+// style (never "auto"), so NewTermRenderer resolves it without probing the
+// terminal — the expensive step that used to stall every file open.
+func renderMarkdown(md string, width int, style string) (string, error) {
 	if width < 1 {
 		width = 80
 	}
-	r, err := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(width))
+	r, err := glamour.NewTermRenderer(glamour.WithStandardStyle(style), glamour.WithWordWrap(width))
 	if err != nil {
 		return "", err
 	}

@@ -28,6 +28,14 @@ type Engine struct {
 	configPath   string
 	manifestPath string
 
+	// opMu serialises the filesystem- and shared-state-mutating operations —
+	// Refresh, Apply, and every config/cache mutation — so at most one runs at a
+	// time. The TUI dispatches Refresh and Apply on background goroutines and
+	// performs config/cache edits on its own loop, so without this lock two of
+	// them could concurrently rewrite the same clone, destination, Config slice
+	// or Manifest (skillmux-3vj). Held for the whole duration of each operation.
+	opMu sync.Mutex
+
 	// mu guards the skill-view coordination below, which a background Refresh
 	// (running in its own goroutine) reads while the UI loop writes it.
 	mu sync.Mutex
@@ -124,6 +132,12 @@ type AvailableSkill struct {
 	// Whether each is a Dependency or a Suggestion is decided against Config by
 	// the SkillGraph; here they are just the raw resolved references.
 	Refs []string `json:"refs,omitempty"`
+	// Unavailable marks a last-known row: a Skill still recorded as installed in
+	// the Manifest but no longer offered by any current Source. It has no Dir or
+	// Fingerprint to install from; it is surfaced only so the row stays visible
+	// and the user can keep it as-is or uninstall it. Never persisted to the
+	// catalog cache — it is derived from the Manifest at render time.
+	Unavailable bool `json:"-"`
 }
 
 // Catalog is the result of a Refresh: the available Skills, the Revision of each
@@ -146,64 +160,102 @@ type CellStatus struct {
 // Refresh fetches and scans every configured Source, computing the current
 // fingerprint of each discovered Skill. Errors from one Source do not stop the
 // others; they are collected in Catalog.SourceErrors.
+//
+// A Source that fails to refresh does not lose its catalog entries: its
+// last-known-good Skills and Revision are carried forward from the persisted
+// cache so a transient fetch/scan/fingerprint error never erases installed
+// Skills from the matrix (skillmux-ewq). The error is still surfaced in
+// SourceErrors so callers can flag the Source as stale.
 func (e *Engine) Refresh() Catalog {
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
+
+	// Load the last-known-good catalog so a failing Source can fall back to its
+	// previously cached entries and revision rather than an empty snapshot.
+	prev := e.CachedCatalog()
+	prevSkills := map[string][]AvailableSkill{}
+	for _, sk := range prev.Skills {
+		prevSkills[sk.Source] = append(prevSkills[sk.Source], sk)
+	}
+
 	cat := Catalog{
 		Revisions:    map[string]domain.Revision{},
 		SourceErrors: map[string]error{},
 	}
 	for _, src := range e.Config.DomainSources() {
-		e.mu.Lock()
-		viewing := src.Name == e.viewedSource
-		e.mu.Unlock()
-
-		var root string
-		var err error
-		if viewing {
-			// A skill view is open on this Source: refresh its objects but leave
-			// the working tree alone, and remember to check it out once the view
-			// closes.
-			root, err = e.Fetcher.FetchObjectsOnly(src)
-			e.mu.Lock()
-			e.deferred[src.Name] = true
-			e.mu.Unlock()
-		} else {
-			root, err = e.Fetcher.Fetch(src)
-		}
+		skills, rev, hasRev, err := e.refreshSource(src)
 		if err != nil {
 			cat.SourceErrors[src.Name] = err
+			// Retain this Source's last-known-good entries and revision instead
+			// of dropping them: overwriting the cache with a partial/empty
+			// failure snapshot would erase installed Skills from the matrix and
+			// could plan a spurious uninstall on the next offline startup.
+			cat.Skills = append(cat.Skills, prevSkills[src.Name]...)
+			if r, ok := prev.Revisions[src.Name]; ok {
+				cat.Revisions[src.Name] = r
+			}
 			continue
 		}
-		if rev, ok := e.Fetcher.Revision(src); ok {
-			rev.FetchedAt = time.Now()
+		if hasRev {
 			cat.Revisions[src.Name] = rev
 		}
-		skills, err := source.Scan(root, src.Name)
-		if err != nil {
-			cat.SourceErrors[src.Name] = err
-			continue
-		}
-		for _, sk := range skills {
-			dir := filepath.Join(root, sk.RelPath)
-			fp, err := fingerprint.Dir(dir)
-			if err != nil {
-				cat.SourceErrors[src.Name] = err
-				continue
-			}
-			cat.Skills = append(cat.Skills, AvailableSkill{
-				Name:              sk.Name,
-				Source:            sk.SourceName,
-				Description:       sk.Description,
-				Dir:               dir,
-				Fingerprint:       fp,
-				Group:             sk.Group,
-				Deprecated:        sk.Deprecated,
-				DeprecationReason: sk.DeprecationReason,
-			})
-		}
+		cat.Skills = append(cat.Skills, skills...)
 	}
 	resolveRefs(cat.Skills)
 	e.saveCatalog(cat)
 	return cat
+}
+
+// refreshSource fetches and scans a single Source, returning its Skills and
+// Revision. It reports an error on any fetch, scan, or fingerprint failure —
+// treating the whole Source as failed rather than emitting a partial skill list,
+// so the caller can substitute the last-known-good entries wholesale.
+func (e *Engine) refreshSource(src domain.Source) (skills []AvailableSkill, rev domain.Revision, hasRev bool, err error) {
+	e.mu.Lock()
+	viewing := src.Name == e.viewedSource
+	e.mu.Unlock()
+
+	var root string
+	if viewing {
+		// A skill view is open on this Source: refresh its objects but leave
+		// the working tree alone, and remember to check it out once the view
+		// closes.
+		root, err = e.Fetcher.FetchObjectsOnly(src)
+		e.mu.Lock()
+		e.deferred[src.Name] = true
+		e.mu.Unlock()
+	} else {
+		root, err = e.Fetcher.Fetch(src)
+	}
+	if err != nil {
+		return nil, domain.Revision{}, false, err
+	}
+	if r, ok := e.Fetcher.Revision(src); ok {
+		r.FetchedAt = time.Now()
+		rev, hasRev = r, true
+	}
+	scanned, err := source.Scan(root, src.Name)
+	if err != nil {
+		return nil, domain.Revision{}, false, err
+	}
+	for _, sk := range scanned {
+		dir := filepath.Join(root, sk.RelPath)
+		fp, ferr := fingerprint.Dir(dir)
+		if ferr != nil {
+			return nil, domain.Revision{}, false, ferr
+		}
+		skills = append(skills, AvailableSkill{
+			Name:              sk.Name,
+			Source:            sk.SourceName,
+			Description:       sk.Description,
+			Dir:               dir,
+			Fingerprint:       fp,
+			Group:             sk.Group,
+			Deprecated:        sk.Deprecated,
+			DeprecationReason: sk.DeprecationReason,
+		})
+	}
+	return skills, rev, hasRev, nil
 }
 
 // resolveRefs fills each Skill's Refs with the names of other catalog Skills it
@@ -232,8 +284,14 @@ func resolveRefs(skills []AvailableSkill) {
 }
 
 // Status computes the Status of every (available Skill, Target) cell by
-// comparing the recorded Installation against the Skill's current fingerprint.
+// comparing the recorded Installation against the Skill's current fingerprint
+// and the Target's current path.
 func (e *Engine) Status(cat Catalog) []CellStatus {
+	targets := e.targetPaths()
+	available := map[skillKey]bool{}
+	for _, sk := range cat.Skills {
+		available[skillKey{sk.Name, sk.Source}] = true
+	}
 	var out []CellStatus
 	for _, t := range e.Config.DomainTargets() {
 		for _, sk := range cat.Skills {
@@ -241,19 +299,69 @@ func (e *Engine) Status(cat Catalog) []CellStatus {
 				SkillName:  sk.Name,
 				SourceName: sk.Source,
 				TargetName: t.Name,
-				Status:     e.cellStatus(sk, t.Name),
+				Status:     e.cellStatus(sk, t.Name, targets[t.Name]),
 			})
 		}
+	}
+	// Surface installations whose Skill is no longer offered by any Source, so
+	// the row does not silently vanish from the matrix after an upstream removal
+	// (skillmux-crl). Such a cell can never be reinstalled, only kept or
+	// uninstalled, so it gets its own StatusUnavailable rather than one of the
+	// installed states that would imply a reinstall.
+	for _, in := range e.Manifest.Installations {
+		if available[skillKey{in.SkillName, in.SourceName}] {
+			continue
+		}
+		out = append(out, CellStatus{
+			SkillName:  in.SkillName,
+			SourceName: in.SourceName,
+			TargetName: in.TargetName,
+			Status:     domain.StatusUnavailable,
+		})
 	}
 	return out
 }
 
-func (e *Engine) cellStatus(sk AvailableSkill, target string) domain.Status {
+// UnavailableSkills returns a last-known row for every distinct (Skill, Source)
+// recorded as installed in the Manifest but no longer offered by any Source in
+// cat. The matrix appends these to the available rows so a Skill removed
+// upstream after install stays visible and reconcilable (skillmux-crl).
+func (e *Engine) UnavailableSkills(cat Catalog) []AvailableSkill {
+	available := map[skillKey]bool{}
+	for _, sk := range cat.Skills {
+		available[skillKey{sk.Name, sk.Source}] = true
+	}
+	seen := map[skillKey]bool{}
+	var out []AvailableSkill
+	for _, in := range e.Manifest.Installations {
+		k := skillKey{in.SkillName, in.SourceName}
+		if available[k] || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, AvailableSkill{
+			Name:        in.SkillName,
+			Source:      in.SourceName,
+			Unavailable: true,
+		})
+	}
+	return out
+}
+
+type skillKey struct{ name, source string }
+
+func (e *Engine) cellStatus(sk AvailableSkill, target, targetPath string) domain.Status {
 	in, ok := e.Manifest.Find(target, sk.Name)
 	if !ok || in.SourceName != sk.Source {
 		// Either not installed, or installed from a different Source — from
 		// this row's perspective it is not installed.
 		return domain.StatusNotInstalled
+	}
+	if in.Path != "" && in.Path != targetPath {
+		// The Target was re-pointed since install: the files sit at the old
+		// path and the current path is empty, so this cell is not up-to-date
+		// no matter what the recorded fingerprint says. A reinstall is due.
+		return domain.StatusUpdateAvailable
 	}
 	if in.Fingerprint == sk.Fingerprint {
 		return domain.StatusUpToDate
@@ -284,7 +392,7 @@ type Preview struct {
 // is the stat behind collision detection.
 func (e *Engine) Preview(desired []reconcile.Cell, cat Catalog) Preview {
 	targets := e.targetPaths()
-	plan := reconcile.Reconcile(desired, availableForReconcile(cat), e.Manifest.Installations)
+	plan := reconcile.Reconcile(desired, availableForReconcile(cat), e.Manifest.Installations, targets)
 	return Preview{
 		Plan:       plan,
 		Collisions: apply.Collisions(plan, targets, e.Manifest),
@@ -297,6 +405,8 @@ func (e *Engine) Preview(desired []reconcile.Cell, cat Catalog) Preview {
 // catalog snapshot the Preview pinned — and persists the Manifest. The error is
 // non-nil only if persisting fails; per-operation outcomes live in the Report.
 func (e *Engine) Apply(pre Preview, opts apply.Options) (apply.Report, error) {
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
 	rep := apply.Apply(pre.Plan, pre.targets, pre.resolved, e.Manifest, opts)
 	if err := manifest.Save(e.manifestPath, e.Manifest); err != nil {
 		return rep, err

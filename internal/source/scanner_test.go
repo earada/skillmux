@@ -3,6 +3,8 @@ package source
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -179,6 +181,157 @@ deprecated: false
 	}
 	if d := byName["explicitfalse"]; d.deprecated {
 		t.Errorf("explicitfalse = %+v, want not deprecated", d)
+	}
+}
+
+func TestScanRejectsNamesThatEscapeTarget(t *testing.T) {
+	// A Skill's name is later joined onto a Target directory, so a name with
+	// separators or dot components could resolve outside it. The scanner must
+	// reject such names before they enter the catalog. See skillmux-aps.
+	cases := map[string]string{
+		"parent-traversal":  "../victim",
+		"nested-traversal":  "foo/../../victim",
+		"backslash":         `..\victim`,
+		"forward-slash":     "sub/dir",
+		"dot":               ".",
+		"dotdot":            "..",
+		"absolute":          "/etc/passwd",
+		"leading-space":     " deploy",
+		"trailing-space":    "deploy ",
+		"control-character": "dep\x00loy",
+		"newline":           "dep\nloy",
+	}
+	for label, name := range cases {
+		t.Run(label, func(t *testing.T) {
+			root := t.TempDir()
+			writeSkill(t, filepath.Join(root, "skill"), "---\nname: "+strconv.Quote(name)+"\n---\nbody")
+			if _, err := Scan(root, "s"); err == nil {
+				t.Fatalf("expected error for skill name %q, got none", name)
+			}
+		})
+	}
+}
+
+func TestScanAcceptsCanonicalNames(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "skill"), "---\nname: my-skill.v2\n---\nbody")
+	got, err := Scan(root, "s")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "my-skill.v2" {
+		t.Fatalf("expected single skill named my-skill.v2, got %+v", got)
+	}
+}
+
+func TestScanRejectsDuplicateSkillNames(t *testing.T) {
+	// Two sibling directories declaring the same name are an ambiguous identity
+	// within one Source: the catalog would show indistinguishable rows and the
+	// install candidate would depend on scan order. See skillmux-5r0.
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "a"), `---
+name: dup
+description: first
+---
+body`)
+	writeSkill(t, filepath.Join(root, "b"), `---
+name: dup
+description: second
+---
+body`)
+
+	_, err := Scan(root, "mysrc")
+	if err == nil {
+		t.Fatal("expected error for duplicate skill names, got none")
+	}
+	msg := err.Error()
+	for _, want := range []string{"dup", "mysrc", "a", "b"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q missing %q", msg, want)
+		}
+	}
+}
+
+func TestScanRejectsDuplicateSkillNamesInSiblingGroups(t *testing.T) {
+	// The same name under two different group directories is still one Source
+	// declaring one identity twice, and must be rejected with both relpaths.
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "team-a", "deploy"), `---
+name: deploy
+description: team a
+---
+body`)
+	writeSkill(t, filepath.Join(root, "team-b", "deploy"), `---
+name: deploy
+description: team b
+---
+body`)
+
+	_, err := Scan(root, "s")
+	if err == nil {
+		t.Fatal("expected error for duplicate names across groups, got none")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "team-a/deploy") || !strings.Contains(msg, "team-b/deploy") {
+		t.Errorf("error %q should include both relpaths team-a/deploy and team-b/deploy", msg)
+	}
+}
+
+func TestScanDuplicateErrorIsStable(t *testing.T) {
+	// Both relpaths appear in a fixed (sorted) order regardless of which
+	// directory the walk visits first, so callers get stable, testable output.
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "zeta"), `---
+name: dup
+---
+body`)
+	writeSkill(t, filepath.Join(root, "alpha"), `---
+name: dup
+---
+body`)
+
+	_, err := Scan(root, "s")
+	if err == nil {
+		t.Fatal("expected error, got none")
+	}
+	// "alpha" sorts before "zeta" and must be named first in the message.
+	msg := err.Error()
+	ai, zi := strings.Index(msg, "alpha"), strings.Index(msg, "zeta")
+	if ai == -1 || zi == -1 || ai > zi {
+		t.Errorf("error %q should mention alpha before zeta", msg)
+	}
+}
+
+func TestScanRejectsSymlinkedSkillFile(t *testing.T) {
+	// A directory whose SKILL.md is a symlink is discoverable (os.Stat follows
+	// the link to valid frontmatter) but fingerprint.Dir and apply.copyDir copy
+	// only regular files, so the installed folder would lack the defining
+	// SKILL.md. The scanner must reject it before it reaches the catalog. See
+	// skillmux-iot.
+	root := t.TempDir()
+	// A valid SKILL.md living outside the skill directory.
+	realDir := filepath.Join(root, "elsewhere")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realFile := filepath.Join(realDir, "real.md")
+	if err := os.WriteFile(realFile, []byte(deployMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(root, "linked")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realFile, filepath.Join(skillDir, "SKILL.md")); err != nil {
+		t.Skipf("symlinks unsupported on this platform: %v", err)
+	}
+
+	_, err := Scan(root, "s")
+	if err == nil {
+		t.Fatal("expected error for symlinked SKILL.md, got none")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error %q should explain the SKILL.md is a symlink", err)
 	}
 }
 

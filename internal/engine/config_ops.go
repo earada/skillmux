@@ -15,6 +15,8 @@ var errNoConfigPath = errors.New("no config path configured; cannot persist chan
 // empty name/path) is enforced by config.Save; on failure the in-memory Config
 // is rolled back and nothing is written.
 func (e *Engine) AddTarget(name, path string) error {
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
 	if e.configPath == "" {
 		return errNoConfigPath
 	}
@@ -61,6 +63,8 @@ func (e *Engine) RemoveSource(name string) error {
 // for local Sources, which have no cache. Unlike the other ops it touches no
 // Config, so nothing is persisted.
 func (e *Engine) ClearSourceCache(name string) (bool, error) {
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
 	for _, src := range e.Config.DomainSources() {
 		if src.Name == name {
 			return e.Fetcher.ClearCache(src)
@@ -83,6 +87,8 @@ func (e *Engine) UpdateSource(oldName string, s config.SourceEntry) error {
 // steer the user to the hand-editable TOML instead. On a persist failure the
 // in-memory Config is rolled back and nothing is written.
 func (e *Engine) ToggleSuggestion(from, to string) (nowSuggestion bool, err error) {
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
 	if e.configPath == "" {
 		return false, errNoConfigPath
 	}
@@ -102,6 +108,8 @@ func (e *Engine) ToggleSuggestion(from, to string) (nowSuggestion bool, err erro
 
 // mutate applies change, persists, and rolls back via restore on failure.
 func (e *Engine) mutate(change func(), restore func(old config.Config)) error {
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
 	if e.configPath == "" {
 		return errNoConfigPath
 	}

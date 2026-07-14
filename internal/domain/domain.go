@@ -72,6 +72,14 @@ type Installation struct {
 	TargetName string
 	// SourceName is the Source the installed Skill came from.
 	SourceName string
+	// Path is the Target directory the Skill was installed into at install
+	// time (home-expanded, as Apply resolved it). Recorded so a later edit of
+	// the Target's Path — keeping its Name — is detected: the files live under
+	// this Path, so if the Target now points elsewhere the Installation is
+	// stale and must be reinstalled at the new Path. Empty on Installations
+	// recorded before this field existed; such entries are grandfathered (a
+	// path move cannot be detected for them) rather than treated as moved.
+	Path string
 	// Fingerprint is the content hash of the Skill folder at install time.
 	Fingerprint string
 	// InstalledAt is when this Installation was last written.
@@ -119,4 +127,9 @@ const (
 	// StatusConflict means two Skills from different Sources share this Name
 	// (and thus install folder) in this Target.
 	StatusConflict Status = "conflict"
+	// StatusUnavailable means the Skill is installed (recorded in the Manifest)
+	// but no longer offered by any current Source — it disappeared upstream
+	// after install. The last-known row stays visible so the user can keep it
+	// as-is or uninstall it; it can never be reinstalled while unavailable.
+	StatusUnavailable Status = "unavailable"
 )

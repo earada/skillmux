@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	yaml "gopkg.in/yaml.v3"
 
@@ -28,6 +29,12 @@ const utf8BOM = "\uFEFF"
 // user gets a clear pointer to fix it.
 func Scan(root, sourceName string) ([]domain.Skill, error) {
 	var skills []domain.Skill
+	// seenBy maps a Skill name to the RelPath where it was first found, so a
+	// second directory declaring the same name can be rejected. A name is a
+	// Skill's identity within a Source; two directories sharing one would make
+	// indistinguishable catalog rows and an install candidate that depends on
+	// scan order. See skillmux-5r0.
+	seenBy := map[string]string{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -36,9 +43,22 @@ func Scan(root, sourceName string) ([]domain.Skill, error) {
 			return nil
 		}
 		skillFile := filepath.Join(path, skillFileName)
-		info, statErr := os.Stat(skillFile)
-		if statErr != nil || info.IsDir() {
+		info, statErr := os.Lstat(skillFile)
+		if statErr != nil {
 			return nil // no SKILL.md here; keep descending
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			// A symlinked SKILL.md is discoverable here — os.Stat would follow it
+			// and read valid frontmatter — but fingerprint.Dir and apply.copyDir
+			// copy only regular files, so they skip it. Cataloguing such a
+			// directory would produce an installed Skill missing the very file
+			// that defines it and a fingerprint that omits it. Reject it at the
+			// source so scan, fingerprint, view, and apply all agree on what a
+			// Skill is. See skillmux-iot.
+			return fmt.Errorf("%s: SKILL.md is a symlink; a Skill's SKILL.md must be a regular file", skillFile)
+		}
+		if info.IsDir() {
+			return nil // a directory named SKILL.md does not define a Skill; keep descending
 		}
 
 		fm, err := parseFrontmatter(skillFile)
@@ -49,6 +69,16 @@ func Scan(root, sourceName string) ([]domain.Skill, error) {
 		if err != nil {
 			return err
 		}
+		if firstRel, dup := seenBy[fm.Name]; dup {
+			// Sort the two paths so the message is identical regardless of walk
+			// order, giving stable, testable error reporting.
+			a, b := filepath.ToSlash(firstRel), filepath.ToSlash(rel)
+			if a > b {
+				a, b = b, a
+			}
+			return fmt.Errorf("source %q declares duplicate skill %q at %s and %s", sourceName, fm.Name, a, b)
+		}
+		seenBy[fm.Name] = rel
 		skills = append(skills, domain.Skill{
 			Name:              fm.Name,
 			Description:       fm.Description,
@@ -138,5 +168,41 @@ func parseFrontmatter(path string) (frontmatter, error) {
 	if strings.TrimSpace(fm.Name) == "" {
 		return fm, errors.New("frontmatter missing required 'name'")
 	}
+	if err := validateSkillName(fm.Name); err != nil {
+		return fm, err
+	}
 	return fm, nil
+}
+
+// validateSkillName requires a Skill's name to be a canonical single path
+// component before it enters the catalog. The name is later joined onto a
+// Target directory (see apply.install/uninstall), so a name carrying separators
+// or dot components — e.g. "../victim" — could resolve outside the Target and
+// let an install create, or a later uninstall recursively delete, arbitrary
+// sibling paths. Rejecting such names here is the primary defence; apply keeps a
+// containment backstop for anything that still slips through. See skillmux-aps.
+func validateSkillName(name string) error {
+	if name != strings.TrimSpace(name) {
+		return fmt.Errorf("skill name %q has surrounding whitespace", name)
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("skill name %q is a dot path component", name)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("skill name %q contains a path separator", name)
+	}
+	if filepath.IsAbs(name) || filepath.VolumeName(name) != "" {
+		return fmt.Errorf("skill name %q is an absolute path", name)
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("skill name %q contains a control character", name)
+		}
+	}
+	// Backstop: after all the checks above, the name must still be exactly its
+	// own last path element — a single, canonical component.
+	if filepath.Base(name) != name {
+		return fmt.Errorf("skill name %q is not a single path component", name)
+	}
+	return nil
 }
