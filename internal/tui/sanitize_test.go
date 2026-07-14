@@ -69,7 +69,7 @@ func TestSanitizeMultilineStripsOSC52InRawBody(t *testing.T) {
 
 func TestRenderBodyRawTextIsInert(t *testing.T) {
 	fc := fileContent{kind: fileText, text: "top\n\x1b]52;c;x\x07\rbottom"}
-	got := renderBody(fc, 80)
+	got := renderBody(fc, 80, "dark")
 	if strings.ContainsRune(got, 0x1b) || strings.ContainsRune(got, 0x07) || strings.ContainsRune(got, '\r') {
 		t.Fatalf("renderBody leaked a control byte: %q", got)
 	}
@@ -77,7 +77,7 @@ func TestRenderBodyRawTextIsInert(t *testing.T) {
 
 func TestRenderBodyMarkdownIsInert(t *testing.T) {
 	fc := fileContent{kind: fileText, isMarkdown: true, text: "# Title\n\n\x1b]0;pwned\x07body"}
-	got := renderBody(fc, 80)
+	got := renderBody(fc, 80, "dark")
 	if strings.Contains(got, "\x1b]0;pwned") || strings.ContainsRune(got, 0x07) {
 		t.Fatalf("markdown render leaked the OSC sequence: %q", got)
 	}
@@ -85,7 +85,7 @@ func TestRenderBodyMarkdownIsInert(t *testing.T) {
 
 func TestRenderBodyReadErrorIsInert(t *testing.T) {
 	fc := fileContent{kind: fileError, err: errors.New("open \x1b]0;evil\x07foo: denied")}
-	got := renderBody(fc, 80)
+	got := renderBody(fc, 80, "dark")
 	if strings.ContainsRune(got, 0x1b) || strings.ContainsRune(got, 0x07) {
 		t.Fatalf("file error leaked an escape byte: %q", got)
 	}

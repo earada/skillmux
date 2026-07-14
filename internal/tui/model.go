@@ -85,6 +85,11 @@ type Model struct {
 	fileLoading bool                  // true while the open file reads+renders off-loop
 	fileContent fileContent           // the classified open file
 	fileVP      viewport.Model        // scroll container for the open file
+	// mdStyle is the glamour style ("dark"/"light"/…) used to render markdown in
+	// the file view. Resolved ONCE in New() (before the alt-screen owns stdin) so
+	// the terminal background probe never runs on the hot per-open path — see
+	// resolveGlamourStyle and renderMarkdown.
+	mdStyle string
 
 	width, height int
 }
@@ -103,6 +108,10 @@ func New(e *engine.Engine) Model {
 		desired:      map[reconcile.Cell]bool{},
 		sourceErrors: map[string]error{},
 		search:       search,
+		// Resolve the markdown style here, before Run() hands stdin to the
+		// alt-screen: this is the one moment the background probe (inside
+		// resolveGlamourStyle) can read the terminal's OSC reply uncontested.
+		mdStyle: resolveGlamourStyle(),
 	}
 	m.graph = e.SkillGraph(engine.Catalog{}) // empty until the first Refresh lands
 	if cached := e.CachedCatalog(); len(cached.Skills) > 0 {
