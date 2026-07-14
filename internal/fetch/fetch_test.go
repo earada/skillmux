@@ -191,6 +191,44 @@ func TestFetchGitHubUpdatesExistingClone(t *testing.T) {
 	}
 }
 
+func TestFetchGitHubRefetchesAfterLocationChange(t *testing.T) {
+	requireGit(t)
+	repoA := initRepo(t, map[string]string{"SKILL.md": "from-A"})
+	repoB := initRepo(t, map[string]string{"SKILL.md": "from-B"})
+	f := &Fetcher{CacheDir: t.TempDir()}
+
+	// First fetch points the Source at repository A.
+	if _, err := f.Fetch(domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: repoA}); err != nil {
+		t.Fatalf("Fetch A: %v", err)
+	}
+
+	// Edit the same-named Source so its Location now points at repository B and
+	// refetch without clearing the cache.
+	srcB := domain.Source{Name: "remote", Kind: domain.SourceGitHub, Location: repoB}
+	dir, err := f.Fetch(srcB)
+	if err != nil {
+		t.Fatalf("Fetch B: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil || string(got) != "from-B" {
+		t.Errorf("after Location change SKILL.md = %q, err %v; want %q", got, err, "from-B")
+	}
+
+	// origin must now name repository B, and the Revision must match B's tip.
+	if origin := gitOut(t, dir, "remote", "get-url", "origin"); origin != repoB {
+		t.Errorf("origin = %q, want %q", origin, repoB)
+	}
+	rev, ok := f.Revision(srcB)
+	if !ok {
+		t.Fatal("expected a revision after Location change")
+	}
+	wantSHA := gitOut(t, repoB, "rev-parse", "--short", "HEAD")
+	if rev.ShortSHA != wantSHA {
+		t.Errorf("Revision.ShortSHA = %q, want repository B's tip %q", rev.ShortSHA, wantSHA)
+	}
+}
+
 func TestFetchGitHubAppliesSubpath(t *testing.T) {
 	requireGit(t)
 	repo := initRepo(t, map[string]string{

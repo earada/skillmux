@@ -85,6 +85,14 @@ func (f *Fetcher) fetchGitHub(src domain.Source, skipCheckout bool) (string, err
 
 	dest := f.CacheDirFor(src)
 	if isGitRepo(dest) {
+		// The cache dir is keyed by Source name, so an existing clone may be
+		// left over from a previous Location under the same name. Point origin
+		// at the current Location (a no-op when unchanged) before updating, so a
+		// Refresh after a Location edit fetches the new repository rather than
+		// silently serving stale content from the old one.
+		if err := syncOrigin(dest, src.Location); err != nil {
+			return "", fmt.Errorf("source %q: %w", src.Name, err)
+		}
 		if err := updateClone(dest, src.Branch, skipCheckout); err != nil {
 			return "", fmt.Errorf("source %q: %w", src.Name, err)
 		}
@@ -94,6 +102,22 @@ func (f *Fetcher) fetchGitHub(src domain.Source, skipCheckout bool) (string, err
 		}
 	}
 	return applySubpath(dest, src.Subpath)
+}
+
+// syncOrigin makes the clone's origin remote point at repoURL, updating it when
+// the Source Location has changed since the clone was created. The stored URL is
+// compared verbatim against the value git recorded at clone time, so an
+// unchanged Location leaves the remote untouched.
+func syncOrigin(dest, repoURL string) error {
+	current, err := runGit(dest, "remote", "get-url", "origin")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(current) == repoURL {
+		return nil
+	}
+	_, err = runGit(dest, "remote", "set-url", "origin", repoURL)
+	return err
 }
 
 // freshClone removes any stale contents at dest and shallow-clones the ref into
