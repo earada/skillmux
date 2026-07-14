@@ -176,6 +176,11 @@ func install(op reconcile.Operation, targets map[string]string, resolved map[Ski
 		}
 	}
 
+	// Capture any prior Installation before we overwrite the manifest entry, so
+	// a Target that was re-pointed since install can have its old-path folder
+	// cleaned up once the copy to the new path succeeds.
+	prev, hadPrev := man.Find(op.TargetName, op.SkillName)
+
 	if err := os.RemoveAll(dest); err != nil {
 		return fmt.Errorf("clearing destination: %w", err)
 	}
@@ -186,9 +191,22 @@ func install(op reconcile.Operation, targets map[string]string, resolved map[Ski
 		SkillName:   op.SkillName,
 		TargetName:  op.TargetName,
 		SourceName:  op.SourceName,
+		Path:        targetPath,
 		Fingerprint: rs.Fingerprint,
 		InstalledAt: now().UTC(),
 	})
+
+	// The Target's Path was edited since install: the copy above landed at the
+	// new path, so remove the stale copy at the old path. This is not data loss
+	// — the content is authoritative in the Source and now present at the new
+	// path — it just keeps a re-pointed Target from leaving orphaned folders.
+	// Best-effort: the manifest already reflects the new path, so a failure
+	// here never leaves Status lying about being up-to-date.
+	if hadPrev && prev.Path != "" && prev.Path != targetPath {
+		if oldDest, err := destWithin(prev.Path, op.SkillName); err == nil {
+			_ = os.RemoveAll(oldDest)
+		}
+	}
 	return nil
 }
 

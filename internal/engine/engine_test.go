@@ -130,6 +130,53 @@ func TestStatusUpdateAvailableAfterSourceChanges(t *testing.T) {
 	}
 }
 
+func TestStatusAndPreviewReactToTargetPathEdit(t *testing.T) {
+	e, oldPath, _, _ := newEnv(t)
+	cat := e.Refresh()
+
+	// Install into target "cc" at its original path.
+	if _, err := e.Apply(e.Preview(cell(), cat), apply.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	cat = e.Refresh()
+	if st := statusOf(e, cat, "deploy", "cc"); st != domain.StatusUpToDate {
+		t.Fatalf("after install: got %q, want up-to-date", st)
+	}
+
+	// Edit the Target's path (name unchanged) — the classic bug: the manifest
+	// fingerprint still matches, but the files sit at oldPath and newPath is
+	// empty.
+	newPath := t.TempDir()
+	e.Config.Targets[0].Path = newPath
+
+	// Status must NOT report up-to-date solely from the stale manifest entry.
+	cat = e.Refresh()
+	if st := statusOf(e, cat, "deploy", "cc"); st != domain.StatusUpdateAvailable {
+		t.Fatalf("after path edit: got %q, want update-available", st)
+	}
+
+	// Preview must emit an operation (previously it emitted none).
+	pre := e.Preview(cell(), cat)
+	if len(pre.Plan.Operations) != 1 || pre.Plan.Operations[0].Reason != reconcile.ReasonTargetMoved {
+		t.Fatalf("expected one target-moved reinstall, got %+v", pre.Plan.Operations)
+	}
+
+	// Applying it migrates to the new path and clears the old one.
+	if _, err := e.Apply(pre, apply.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(newPath, "deploy", "SKILL.md")); err != nil {
+		t.Errorf("skill not installed at new path: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(oldPath, "deploy")); !os.IsNotExist(err) {
+		t.Error("skill should have been removed from the old path")
+	}
+	cat = e.Refresh()
+	if st := statusOf(e, cat, "deploy", "cc"); st != domain.StatusUpToDate {
+		t.Errorf("after migration: got %q, want up-to-date", st)
+	}
+}
+
 func TestApplyEmptyDesiredUninstalls(t *testing.T) {
 	e, targetPath, _, _ := newEnv(t)
 	cat := e.Refresh()

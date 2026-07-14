@@ -232,8 +232,10 @@ func resolveRefs(skills []AvailableSkill) {
 }
 
 // Status computes the Status of every (available Skill, Target) cell by
-// comparing the recorded Installation against the Skill's current fingerprint.
+// comparing the recorded Installation against the Skill's current fingerprint
+// and the Target's current path.
 func (e *Engine) Status(cat Catalog) []CellStatus {
+	targets := e.targetPaths()
 	var out []CellStatus
 	for _, t := range e.Config.DomainTargets() {
 		for _, sk := range cat.Skills {
@@ -241,19 +243,25 @@ func (e *Engine) Status(cat Catalog) []CellStatus {
 				SkillName:  sk.Name,
 				SourceName: sk.Source,
 				TargetName: t.Name,
-				Status:     e.cellStatus(sk, t.Name),
+				Status:     e.cellStatus(sk, t.Name, targets[t.Name]),
 			})
 		}
 	}
 	return out
 }
 
-func (e *Engine) cellStatus(sk AvailableSkill, target string) domain.Status {
+func (e *Engine) cellStatus(sk AvailableSkill, target, targetPath string) domain.Status {
 	in, ok := e.Manifest.Find(target, sk.Name)
 	if !ok || in.SourceName != sk.Source {
 		// Either not installed, or installed from a different Source — from
 		// this row's perspective it is not installed.
 		return domain.StatusNotInstalled
+	}
+	if in.Path != "" && in.Path != targetPath {
+		// The Target was re-pointed since install: the files sit at the old
+		// path and the current path is empty, so this cell is not up-to-date
+		// no matter what the recorded fingerprint says. A reinstall is due.
+		return domain.StatusUpdateAvailable
 	}
 	if in.Fingerprint == sk.Fingerprint {
 		return domain.StatusUpToDate
@@ -284,7 +292,7 @@ type Preview struct {
 // is the stat behind collision detection.
 func (e *Engine) Preview(desired []reconcile.Cell, cat Catalog) Preview {
 	targets := e.targetPaths()
-	plan := reconcile.Reconcile(desired, availableForReconcile(cat), e.Manifest.Installations)
+	plan := reconcile.Reconcile(desired, availableForReconcile(cat), e.Manifest.Installations, targets)
 	return Preview{
 		Plan:       plan,
 		Collisions: apply.Collisions(plan, targets, e.Manifest),

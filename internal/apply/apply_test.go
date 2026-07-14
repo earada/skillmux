@@ -90,6 +90,46 @@ func TestReinstallOverwritesTrackedFolder(t *testing.T) {
 	}
 }
 
+func TestReinstallAfterTargetPathMoveMigratesAndClearsOldPath(t *testing.T) {
+	src := makeSource(t, "v1")
+	oldPath := t.TempDir()
+	newPath := t.TempDir()
+
+	// A prior install lives at oldPath and is tracked there.
+	if err := os.MkdirAll(filepath.Join(oldPath, "deploy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(oldPath, "deploy", "SKILL.md"), []byte("v1"), 0o644)
+	man := &manifest.Manifest{}
+	man.Put(domain.Installation{SkillName: "deploy", TargetName: "t", SourceName: "s", Path: oldPath, Fingerprint: "fp1"})
+
+	// The Target "t" now points at newPath; a target-moved reinstall runs.
+	rep := Apply(
+		reconcile.Plan{Operations: []reconcile.Operation{
+			{Kind: reconcile.Reinstall, SkillName: "deploy", SourceName: "s", TargetName: "t", Reason: reconcile.ReasonTargetMoved},
+		}},
+		map[string]string{"t": newPath},
+		map[SkillID]ResolvedSkill{{Source: "s", Skill: "deploy"}: {Dir: src, Fingerprint: "fp1"}},
+		man, Options{},
+	)
+
+	if !rep.AllOK() {
+		t.Fatalf("expected success, got %+v", rep.Results)
+	}
+	// Installed at the new path.
+	if got := readInstalled(t, newPath, "deploy"); got != "v1" {
+		t.Errorf("content at new path = %q, want v1", got)
+	}
+	// Old path cleaned up — no orphaned copy left behind.
+	if _, err := os.Stat(filepath.Join(oldPath, "deploy")); !os.IsNotExist(err) {
+		t.Error("stale folder at old path should have been removed")
+	}
+	// Manifest now records the new path.
+	if in, _ := man.Find("t", "deploy"); in.Path != newPath {
+		t.Errorf("manifest path = %q, want %q", in.Path, newPath)
+	}
+}
+
 func TestUninstallRemovesFolderAndEntry(t *testing.T) {
 	targetPath := t.TempDir()
 	os.MkdirAll(filepath.Join(targetPath, "deploy"), 0o755)
