@@ -1,8 +1,10 @@
 package apply
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/earada/skillmux/internal/domain"
@@ -314,6 +316,139 @@ func TestUninstallRefusesNameResolvingToTargetItself(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(targetPath, "keep.txt")); err != nil {
 		t.Errorf("uninstall must not clear the target itself: %v", err)
+	}
+}
+
+func TestFailedInstallLeavesUntrackedDestinationUntouched(t *testing.T) {
+	// Fault injection: the copy fails partway (e.g. a source file becomes
+	// unreadable). A brand-new install must not leave a partial folder behind
+	// and must record nothing.
+	src := makeSource(t, "new")
+	targetPath := t.TempDir()
+	man := &manifest.Manifest{}
+
+	restore := copyTree
+	copyTree = func(_, _ string) error { return errors.New("boom: read failed mid-copy") }
+	defer func() { copyTree = restore }()
+
+	rep := Apply(
+		reconcile.Plan{Operations: []reconcile.Operation{
+			{Kind: reconcile.Install, SkillName: "deploy", SourceName: "s", TargetName: "t"},
+		}},
+		map[string]string{"t": targetPath},
+		map[SkillID]ResolvedSkill{{Source: "s", Skill: "deploy"}: {Dir: src, Fingerprint: "fp"}},
+		man, Options{},
+	)
+
+	if rep.AllOK() {
+		t.Fatal("expected the install to fail")
+	}
+	if _, err := os.Stat(filepath.Join(targetPath, "deploy")); !os.IsNotExist(err) {
+		t.Error("a failed install must not leave a destination folder behind")
+	}
+	if _, ok := man.Find("t", "deploy"); ok {
+		t.Error("nothing should be recorded for a failed install")
+	}
+	// No staging leftovers.
+	assertNoStagingLeftovers(t, targetPath)
+}
+
+func TestFailedReinstallPreservesPriorInstallationAndManifest(t *testing.T) {
+	// Fault injection on read: the reinstall copy fails. The prior working
+	// installation and its Manifest entry must survive intact.
+	src := makeSource(t, "v2")
+	targetPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(targetPath, "deploy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(targetPath, "deploy", "SKILL.md"), []byte("v1"), 0o644)
+	man := &manifest.Manifest{}
+	man.Put(installation("deploy", "t", "s", "fp1"))
+
+	restore := copyTree
+	copyTree = func(_, _ string) error { return errors.New("boom: read failed mid-copy") }
+	defer func() { copyTree = restore }()
+
+	rep := Apply(
+		reconcile.Plan{Operations: []reconcile.Operation{
+			{Kind: reconcile.Reinstall, SkillName: "deploy", SourceName: "s", TargetName: "t", Reason: reconcile.ReasonUpdateAvailable},
+		}},
+		map[string]string{"t": targetPath},
+		map[SkillID]ResolvedSkill{{Source: "s", Skill: "deploy"}: {Dir: src, Fingerprint: "fp2"}},
+		man, Options{},
+	)
+
+	if rep.AllOK() {
+		t.Fatal("expected the reinstall to fail")
+	}
+	if got := readInstalled(t, targetPath, "deploy"); got != "v1" {
+		t.Errorf("prior installation clobbered: content = %q, want v1", got)
+	}
+	if in, _ := man.Find("t", "deploy"); in.Fingerprint != "fp1" {
+		t.Errorf("manifest entry should be preserved on failure: %+v", in)
+	}
+	assertNoStagingLeftovers(t, targetPath)
+}
+
+func TestFailedReinstallRollsBackOnRenameFailure(t *testing.T) {
+	// Fault injection on rename: the copy completes and the prior install is
+	// moved aside, but the final swap fails. The rollback must restore the
+	// prior installation and Manifest entry, with no staging leftovers.
+	src := makeSource(t, "v2")
+	targetPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(targetPath, "deploy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(targetPath, "deploy", "SKILL.md"), []byte("v1"), 0o644)
+	man := &manifest.Manifest{}
+	man.Put(installation("deploy", "t", "s", "fp1"))
+
+	// Let the "move prior installation aside" rename succeed, then fail the
+	// "swap staged copy into place" rename to exercise the rollback path.
+	restore := renamePath
+	calls := 0
+	renamePath = func(oldPath, newPath string) error {
+		calls++
+		if calls == 2 {
+			return errors.New("boom: rename failed on swap")
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	defer func() { renamePath = restore }()
+
+	rep := Apply(
+		reconcile.Plan{Operations: []reconcile.Operation{
+			{Kind: reconcile.Reinstall, SkillName: "deploy", SourceName: "s", TargetName: "t", Reason: reconcile.ReasonUpdateAvailable},
+		}},
+		map[string]string{"t": targetPath},
+		map[SkillID]ResolvedSkill{{Source: "s", Skill: "deploy"}: {Dir: src, Fingerprint: "fp2"}},
+		man, Options{},
+	)
+
+	if rep.AllOK() {
+		t.Fatal("expected the reinstall to fail on the swap")
+	}
+	if got := readInstalled(t, targetPath, "deploy"); got != "v1" {
+		t.Errorf("rollback failed: content = %q, want v1", got)
+	}
+	if in, _ := man.Find("t", "deploy"); in.Fingerprint != "fp1" {
+		t.Errorf("manifest entry should be preserved after rollback: %+v", in)
+	}
+	assertNoStagingLeftovers(t, targetPath)
+}
+
+// assertNoStagingLeftovers verifies the swap machinery cleaned up its temp
+// folders under targetPath, whatever the outcome.
+func assertNoStagingLeftovers(t *testing.T, targetPath string) {
+	t.Helper()
+	entries, err := os.ReadDir(targetPath)
+	if err != nil {
+		t.Fatalf("reading target dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".skillmux-stage-") {
+			t.Errorf("staging leftover not cleaned up: %s", e.Name())
+		}
 	}
 }
 

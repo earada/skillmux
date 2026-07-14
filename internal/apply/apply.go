@@ -181,11 +181,13 @@ func install(op reconcile.Operation, targets map[string]string, resolved map[Ski
 	// cleaned up once the copy to the new path succeeds.
 	prev, hadPrev := man.Find(op.TargetName, op.SkillName)
 
-	if err := os.RemoveAll(dest); err != nil {
-		return fmt.Errorf("clearing destination: %w", err)
-	}
-	if err := copyDir(rs.Dir, dest); err != nil {
-		return fmt.Errorf("copying skill: %w", err)
+	// Non-destructive install (skillmux-4zr): stage the copy in a sibling temp
+	// folder and only swap it into place once it is complete. A read/copy
+	// failure never touches the live destination, so a failed install leaves an
+	// untracked folder untouched and a failed reinstall preserves the prior
+	// installation together with its Manifest entry.
+	if err := stageAndSwap(rs.Dir, targetPath, dest); err != nil {
+		return err
 	}
 	man.Put(domain.Installation{
 		SkillName:   op.SkillName,
@@ -206,6 +208,66 @@ func install(op reconcile.Operation, targets map[string]string, resolved map[Ski
 		if oldDest, err := destWithin(prev.Path, op.SkillName); err == nil {
 			_ = os.RemoveAll(oldDest)
 		}
+	}
+	return nil
+}
+
+// Seams so fault-injection tests can simulate a mid-copy read failure or a
+// failed atomic swap without special filesystem states. Production wiring is
+// the real filesystem; tests swap these and restore them.
+var (
+	copyTree   = copyDir
+	renamePath = os.Rename
+)
+
+// stageAndSwap copies src into a temporary folder that is a sibling of dest
+// (same filesystem, so the final move is atomic) and only then replaces dest.
+// If the copy fails, the staging folder is removed and dest is left exactly as
+// it was. If the swap fails after a prior installation was moved aside, the
+// prior installation is restored. The invariant: dest is only ever mutated by
+// a rename of a fully-materialised copy, never by a partial write.
+func stageAndSwap(src, targetPath, dest string) error {
+	staging, err := os.MkdirTemp(targetPath, ".skillmux-stage-*")
+	if err != nil {
+		return fmt.Errorf("creating staging dir: %w", err)
+	}
+	// MkdirTemp creates 0o700; match copyDir's directory permissions so a
+	// staged install is indistinguishable from a direct one.
+	if err := os.Chmod(staging, 0o755); err != nil {
+		_ = os.RemoveAll(staging)
+		return fmt.Errorf("preparing staging dir: %w", err)
+	}
+	if err := copyTree(src, staging); err != nil {
+		_ = os.RemoveAll(staging)
+		return fmt.Errorf("copying skill: %w", err)
+	}
+
+	// Ensure the parent of a nested destination exists before the swap.
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		_ = os.RemoveAll(staging)
+		return fmt.Errorf("preparing destination: %w", err)
+	}
+
+	// Move any existing installation aside so a failed swap can be rolled back.
+	var backup string
+	if exists(dest) {
+		backup = staging + ".old"
+		if err := renamePath(dest, backup); err != nil {
+			_ = os.RemoveAll(staging)
+			return fmt.Errorf("clearing destination: %w", err)
+		}
+	}
+
+	if err := renamePath(staging, dest); err != nil {
+		if backup != "" {
+			_ = renamePath(backup, dest) // roll back to the prior installation
+		}
+		_ = os.RemoveAll(staging)
+		return fmt.Errorf("installing skill: %w", err)
+	}
+
+	if backup != "" {
+		_ = os.RemoveAll(backup)
 	}
 	return nil
 }
