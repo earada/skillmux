@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -38,6 +39,81 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if len(got.Sources) != 2 || got.Sources[0] != want.Sources[0] {
 		t.Errorf("sources round-trip mismatch: %+v", got.Sources)
+	}
+}
+
+// TestSaveFailureLeavesPreviousConfigReadable injects a write failure (a
+// read-only parent directory blocks temp-file creation) and proves the atomic
+// Save leaves the previous, valid Config intact. A direct os.WriteFile would
+// have truncated config.toml before failing.
+func TestSaveFailureLeavesPreviousConfigReadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based failure injection is meaningless as root")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	orig := &Config{Targets: []TargetEntry{{Name: "claude-code", Path: "~/.claude/skills"}}}
+	if err := Save(path, orig); err != nil {
+		t.Fatalf("initial Save: %v", err)
+	}
+
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("chmod dir: %v", err)
+	}
+	defer os.Chmod(dir, 0o755) //nolint:errcheck // restore so cleanup can remove the dir
+
+	next := &Config{Targets: []TargetEntry{{Name: "changed", Path: "/new"}}}
+	if err := Save(path, next); err == nil {
+		t.Fatal("expected Save to fail on a read-only directory")
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("previous config no longer readable: %v", err)
+	}
+	if len(got.Targets) != 1 || got.Targets[0] != orig.Targets[0] {
+		t.Fatalf("previous config was corrupted: %+v", got.Targets)
+	}
+}
+
+// TestSavePreservesExistingPermissions verifies a rewrite keeps the existing
+// file's mode rather than resetting it to the 0644 default.
+func TestSavePreservesExistingPermissions(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission bits are not enforced for root")
+	}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := Save(path, &Config{}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if err := Save(path, &Config{Targets: []TargetEntry{{Name: "a", Path: "/x"}}}); err != nil {
+		t.Fatalf("second Save: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("permissions not preserved: got %o, want 600", info.Mode().Perm())
+	}
+}
+
+// TestSaveLeavesNoTempFile ensures a successful Save cleans up after itself.
+func TestSaveLeavesNoTempFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := Save(path, &Config{Targets: []TargetEntry{{Name: "a", Path: "/x"}}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.toml" {
+		t.Fatalf("expected only config.toml, got %v", entries)
 	}
 }
 
