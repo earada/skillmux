@@ -130,6 +130,82 @@ func TestStatusUpdateAvailableAfterSourceChanges(t *testing.T) {
 	}
 }
 
+// TestRefreshRetainsCachedSkillsOnSourceFailure exercises skillmux-ewq: a
+// successful refresh followed by a failing one must keep the Source's
+// last-known-good entries (and their fingerprints) instead of erasing them,
+// while still surfacing the current error.
+func TestRefreshRetainsCachedSkillsOnSourceFailure(t *testing.T) {
+	e, _, srcSkillDir, _ := newEnv(t)
+
+	fresh := e.Refresh()
+	if len(fresh.Skills) != 1 || len(fresh.SourceErrors) != 0 {
+		t.Fatalf("first refresh: skills=%+v errors=%v", fresh.Skills, fresh.SourceErrors)
+	}
+	wantFP := fresh.Skills[0].Fingerprint
+
+	// Make the Source unavailable and refresh again.
+	if err := os.RemoveAll(filepath.Dir(srcSkillDir)); err != nil {
+		t.Fatal(err)
+	}
+	after := e.Refresh()
+
+	if _, ok := after.SourceErrors["local"]; !ok {
+		t.Fatalf("expected an error for the unavailable source, got %v", after.SourceErrors)
+	}
+	if len(after.Skills) != 1 {
+		t.Fatalf("expected 1 retained skill, got %+v", after.Skills)
+	}
+	if after.Skills[0].Name != "deploy" || after.Skills[0].Fingerprint != wantFP {
+		t.Errorf("retained skill wrong: %+v (want fingerprint %q)", after.Skills[0], wantFP)
+	}
+
+	// The cache must not be clobbered with the empty failure snapshot.
+	if cached := e.CachedCatalog(); len(cached.Skills) != 1 || cached.Skills[0].Name != "deploy" {
+		t.Fatalf("cache overwritten by failure snapshot: %+v", cached.Skills)
+	}
+}
+
+// TestOfflineRefreshKeepsInstalledSkillAvailable exercises the offline-startup
+// half of skillmux-ewq: a fresh Engine over an existing Manifest installation
+// whose Source is unavailable must still see the installed Skill (from the
+// cache) after a failing Refresh, so a Preview that keeps it selected plans no
+// operations — in particular, no spurious uninstall.
+func TestOfflineRefreshKeepsInstalledSkillAvailable(t *testing.T) {
+	e, _, srcSkillDir, manifestPath := newEnv(t)
+
+	// Install the skill from a working Source, populating the catalog cache.
+	cat := e.Refresh()
+	if _, err := e.Apply(e.Preview(cell(), cat), apply.Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a fresh offline startup: a new Engine sharing the cache dir and
+	// the persisted manifest, with the Source now unavailable.
+	if err := os.RemoveAll(filepath.Dir(srcSkillDir)); err != nil {
+		t.Fatal(err)
+	}
+	man, err := manifest.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2 := New(e.Config, man, &fetch.Fetcher{CacheDir: e.Fetcher.CacheDir}, "", manifestPath)
+
+	offline := e2.Refresh()
+	if _, ok := offline.SourceErrors["local"]; !ok {
+		t.Fatalf("expected offline source error, got %v", offline.SourceErrors)
+	}
+	if len(offline.Skills) != 1 {
+		t.Fatalf("offline refresh dropped installed skill: %+v", offline.Skills)
+	}
+	if st := statusOf(e2, offline, "deploy", "cc"); st != domain.StatusUpToDate {
+		t.Errorf("offline status: got %q, want up-to-date", st)
+	}
+	pre := e2.Preview(cell(), offline)
+	if len(pre.Plan.Operations) != 0 {
+		t.Fatalf("expected no operations for a retained installation, got %+v", pre.Plan.Operations)
+	}
+}
+
 func TestStatusAndPreviewReactToTargetPathEdit(t *testing.T) {
 	e, oldPath, _, _ := newEnv(t)
 	cat := e.Refresh()

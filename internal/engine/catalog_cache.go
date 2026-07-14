@@ -45,14 +45,34 @@ func (e *Engine) CachedCatalog() Catalog {
 }
 
 // saveCatalog persists the catalog's Skills for the next startup. Best-effort:
-// a cache write failure must not break a Refresh.
+// a cache write failure must not break a Refresh. The write is atomic — data is
+// written to a temp file in the same directory and renamed into place — so a
+// crash or partial write can never leave a truncated cache that would replace
+// the last-known-good catalog with a corrupt snapshot (skillmux-ewq).
 func (e *Engine) saveCatalog(cat Catalog) {
 	data, err := json.MarshalIndent(catalogCache{Skills: cat.Skills, Revisions: cat.Revisions}, "", "  ")
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(e.catalogPath()), 0o755); err != nil {
+	dir := filepath.Dir(e.catalogPath())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
-	_ = os.WriteFile(e.catalogPath(), data, 0o644)
+	tmp, err := os.CreateTemp(dir, "catalog-*.json.tmp")
+	if err != nil {
+		return
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return
+	}
+	if err := os.Rename(tmpName, e.catalogPath()); err != nil {
+		_ = os.Remove(tmpName)
+	}
 }

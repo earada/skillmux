@@ -160,66 +160,102 @@ type CellStatus struct {
 // Refresh fetches and scans every configured Source, computing the current
 // fingerprint of each discovered Skill. Errors from one Source do not stop the
 // others; they are collected in Catalog.SourceErrors.
+//
+// A Source that fails to refresh does not lose its catalog entries: its
+// last-known-good Skills and Revision are carried forward from the persisted
+// cache so a transient fetch/scan/fingerprint error never erases installed
+// Skills from the matrix (skillmux-ewq). The error is still surfaced in
+// SourceErrors so callers can flag the Source as stale.
 func (e *Engine) Refresh() Catalog {
 	e.opMu.Lock()
 	defer e.opMu.Unlock()
+
+	// Load the last-known-good catalog so a failing Source can fall back to its
+	// previously cached entries and revision rather than an empty snapshot.
+	prev := e.CachedCatalog()
+	prevSkills := map[string][]AvailableSkill{}
+	for _, sk := range prev.Skills {
+		prevSkills[sk.Source] = append(prevSkills[sk.Source], sk)
+	}
+
 	cat := Catalog{
 		Revisions:    map[string]domain.Revision{},
 		SourceErrors: map[string]error{},
 	}
 	for _, src := range e.Config.DomainSources() {
-		e.mu.Lock()
-		viewing := src.Name == e.viewedSource
-		e.mu.Unlock()
-
-		var root string
-		var err error
-		if viewing {
-			// A skill view is open on this Source: refresh its objects but leave
-			// the working tree alone, and remember to check it out once the view
-			// closes.
-			root, err = e.Fetcher.FetchObjectsOnly(src)
-			e.mu.Lock()
-			e.deferred[src.Name] = true
-			e.mu.Unlock()
-		} else {
-			root, err = e.Fetcher.Fetch(src)
-		}
+		skills, rev, hasRev, err := e.refreshSource(src)
 		if err != nil {
 			cat.SourceErrors[src.Name] = err
+			// Retain this Source's last-known-good entries and revision instead
+			// of dropping them: overwriting the cache with a partial/empty
+			// failure snapshot would erase installed Skills from the matrix and
+			// could plan a spurious uninstall on the next offline startup.
+			cat.Skills = append(cat.Skills, prevSkills[src.Name]...)
+			if r, ok := prev.Revisions[src.Name]; ok {
+				cat.Revisions[src.Name] = r
+			}
 			continue
 		}
-		if rev, ok := e.Fetcher.Revision(src); ok {
-			rev.FetchedAt = time.Now()
+		if hasRev {
 			cat.Revisions[src.Name] = rev
 		}
-		skills, err := source.Scan(root, src.Name)
-		if err != nil {
-			cat.SourceErrors[src.Name] = err
-			continue
-		}
-		for _, sk := range skills {
-			dir := filepath.Join(root, sk.RelPath)
-			fp, err := fingerprint.Dir(dir)
-			if err != nil {
-				cat.SourceErrors[src.Name] = err
-				continue
-			}
-			cat.Skills = append(cat.Skills, AvailableSkill{
-				Name:              sk.Name,
-				Source:            sk.SourceName,
-				Description:       sk.Description,
-				Dir:               dir,
-				Fingerprint:       fp,
-				Group:             sk.Group,
-				Deprecated:        sk.Deprecated,
-				DeprecationReason: sk.DeprecationReason,
-			})
-		}
+		cat.Skills = append(cat.Skills, skills...)
 	}
 	resolveRefs(cat.Skills)
 	e.saveCatalog(cat)
 	return cat
+}
+
+// refreshSource fetches and scans a single Source, returning its Skills and
+// Revision. It reports an error on any fetch, scan, or fingerprint failure —
+// treating the whole Source as failed rather than emitting a partial skill list,
+// so the caller can substitute the last-known-good entries wholesale.
+func (e *Engine) refreshSource(src domain.Source) (skills []AvailableSkill, rev domain.Revision, hasRev bool, err error) {
+	e.mu.Lock()
+	viewing := src.Name == e.viewedSource
+	e.mu.Unlock()
+
+	var root string
+	if viewing {
+		// A skill view is open on this Source: refresh its objects but leave
+		// the working tree alone, and remember to check it out once the view
+		// closes.
+		root, err = e.Fetcher.FetchObjectsOnly(src)
+		e.mu.Lock()
+		e.deferred[src.Name] = true
+		e.mu.Unlock()
+	} else {
+		root, err = e.Fetcher.Fetch(src)
+	}
+	if err != nil {
+		return nil, domain.Revision{}, false, err
+	}
+	if r, ok := e.Fetcher.Revision(src); ok {
+		r.FetchedAt = time.Now()
+		rev, hasRev = r, true
+	}
+	scanned, err := source.Scan(root, src.Name)
+	if err != nil {
+		return nil, domain.Revision{}, false, err
+	}
+	for _, sk := range scanned {
+		dir := filepath.Join(root, sk.RelPath)
+		fp, ferr := fingerprint.Dir(dir)
+		if ferr != nil {
+			return nil, domain.Revision{}, false, ferr
+		}
+		skills = append(skills, AvailableSkill{
+			Name:              sk.Name,
+			Source:            sk.SourceName,
+			Description:       sk.Description,
+			Dir:               dir,
+			Fingerprint:       fp,
+			Group:             sk.Group,
+			Deprecated:        sk.Deprecated,
+			DeprecationReason: sk.DeprecationReason,
+		})
+	}
+	return skills, rev, hasRev, nil
 }
 
 // resolveRefs fills each Skill's Refs with the names of other catalog Skills it
