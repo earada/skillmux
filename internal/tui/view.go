@@ -121,19 +121,21 @@ func isDeprecated(s engine.AvailableSkill) bool {
 // struck when deprecated; its folder group trails as a dimmed hint, then the
 // Source in parentheses.
 func skillLabel(s engine.AvailableSkill, conflict bool) string {
+	// Name, Group and Source are all Source-controlled; make them inert.
+	skillName := sanitize(s.Name)
 	var name string
 	switch {
 	case isDeprecated(s):
-		name = deprecatedStyle.Render(deprecatedGlyph + " " + s.Name)
+		name = deprecatedStyle.Render(deprecatedGlyph + " " + skillName)
 	case conflict:
-		name = conflictNameStyle.Render(s.Name)
+		name = conflictNameStyle.Render(skillName)
 	default:
-		name = skillNameStyle.Render(s.Name)
+		name = skillNameStyle.Render(skillName)
 	}
 	if s.Group != "" {
 		name += groupStyle.Render("  ") + renderGroup(s.Group)
 	}
-	return name + " (" + s.Source + ")"
+	return name + " (" + sanitize(s.Source) + ")"
 }
 
 // renderGroup renders a folder-group hint dimmed, but reddens every occurrence
@@ -141,6 +143,7 @@ func skillLabel(s engine.AvailableSkill, conflict bool) string {
 // path jumps out.
 func renderGroup(group string) string {
 	const word = "deprecated"
+	group = sanitize(group) // Source-controlled folder path; make it inert first
 	low := strings.ToLower(group)
 	var b strings.Builder
 	for i := 0; i < len(group); {
@@ -395,7 +398,7 @@ func (m Model) matrixFooter() string {
 		}
 		sort.Strings(names)
 		for _, n := range names {
-			b.WriteString(errStyle.Render(fmt.Sprintf("⚠ source %q: %v", n, m.sourceErrors[n])) + "\n")
+			b.WriteString(errStyle.Render(sanitize(fmt.Sprintf("⚠ source %q: %v", n, m.sourceErrors[n]))) + "\n")
 		}
 	}
 	legend := strings.Join([]string{
@@ -498,17 +501,18 @@ func (m Model) renderBrokenSection(broken []brokenEntry) string {
 	for _, e := range broken {
 		needs := make([]string, len(e.Missing))
 		for i, md := range e.Missing {
+			mdName := sanitize(md.Name)
 			switch {
 			case md.Source == "":
-				needs[i] = md.Name + errStyle.Render(" (unresolvable)")
+				needs[i] = mdName + errStyle.Render(" (unresolvable)")
 			case md.CrossSource:
-				needs[i] = md.Name + dimStyle.Render(" ("+md.Source+")")
+				needs[i] = mdName + dimStyle.Render(" ("+sanitize(md.Source)+")")
 			default:
-				needs[i] = md.Name
+				needs[i] = mdName
 			}
 		}
-		head := brokenStyle.Render(e.Cell.Skill) +
-			dimStyle.Render(" ("+e.Cell.Source+") → "+e.Cell.Target+"  needs ")
+		head := brokenStyle.Render(sanitize(e.Cell.Skill)) +
+			dimStyle.Render(" ("+sanitize(e.Cell.Source)+") → "+sanitize(e.Cell.Target)+"  needs ")
 		b.WriteString("  " + head + strings.Join(needs, dimStyle.Render(", ")) + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -522,20 +526,20 @@ func renderCollisionSection(cols []apply.Collision) string {
 	b.WriteString(brokenStyle.Render("⚠ will overwrite") +
 		dimStyle.Render("  — these untracked folders need confirmation to adopt") + "\n")
 	for _, c := range cols {
-		b.WriteString("  " + brokenStyle.Render(c.SkillName) +
-			dimStyle.Render(" ("+c.SourceName+") → "+c.TargetName+"  "+c.Dir) + "\n")
+		b.WriteString("  " + brokenStyle.Render(sanitize(c.SkillName)) +
+			dimStyle.Render(" ("+sanitize(c.SourceName)+") → "+sanitize(c.TargetName)+"  "+sanitize(c.Dir)) + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
 func describeOp(op reconcile.Operation) string {
-	s := op.SkillName
+	s := sanitize(op.SkillName)
 	if op.SourceName != "" {
-		s += fmt.Sprintf(" (%s)", op.SourceName)
+		s += fmt.Sprintf(" (%s)", sanitize(op.SourceName))
 	}
-	s += " → " + op.TargetName
+	s += " → " + sanitize(op.TargetName)
 	if op.Reason != "" {
-		s += dimStyle.Render("  [" + op.Reason + "]")
+		s += dimStyle.Render("  [" + sanitize(op.Reason) + "]")
 	}
 	return s
 }
@@ -545,9 +549,9 @@ func (m Model) viewOverwrite() string {
 	b.WriteString(headingStyle.Render("Overwrite untracked folders?") + "\n\n")
 	b.WriteString(dimStyle.Render("These folders already exist but were not installed by skillmux:") + "\n\n")
 	for _, c := range m.preview.Collisions {
-		b.WriteString(errStyle.Render(c.SkillName) +
-			dimStyle.Render(" ("+c.SourceName+") → "+c.TargetName) + "\n")
-		b.WriteString(dimStyle.Render("  "+c.Dir) + "\n")
+		b.WriteString(errStyle.Render(sanitize(c.SkillName)) +
+			dimStyle.Render(" ("+sanitize(c.SourceName)+") → "+sanitize(c.TargetName)) + "\n")
+		b.WriteString(dimStyle.Render("  "+sanitize(c.Dir)) + "\n")
 	}
 	return m.frame(m.headerBar("overwrite"), m.panel(strings.TrimRight(b.String(), "\n")),
 		footerKeys(keycap{"y", "adopt"}, keycap{"n", "cancel"}))
@@ -557,7 +561,7 @@ func (m Model) viewResult() string {
 	var b strings.Builder
 	b.WriteString(headingStyle.Render("Result") + "\n\n")
 	if m.applyErr != nil {
-		b.WriteString(errStyle.Render("persist error: "+m.applyErr.Error()) + "\n\n")
+		b.WriteString(errStyle.Render("persist error: "+sanitize(m.applyErr.Error())) + "\n\n")
 	}
 	ok, failed := 0, 0
 	for _, r := range m.report.Results {
@@ -566,7 +570,7 @@ func (m Model) viewResult() string {
 			b.WriteString(statusStyles[domain.StatusUpToDate].Render("✓ ") + describeOp(r.Op) + "\n")
 		} else {
 			failed++
-			b.WriteString(errStyle.Render("✗ ") + describeOp(r.Op) + errStyle.Render("  "+r.Err.Error()) + "\n")
+			b.WriteString(errStyle.Render("✗ ") + describeOp(r.Op) + errStyle.Render("  "+sanitize(r.Err.Error())) + "\n")
 		}
 	}
 	summary := statusStyles[domain.StatusUpToDate].Render(fmt.Sprintf("%d ok", ok))
@@ -599,15 +603,18 @@ func (m Model) viewConfig() string {
 		if e.kind == entrySource {
 			kind = "source"
 			if rev, ok := m.cat.Revisions[e.name]; ok {
-				detail += "  " + rev.Label()
+				detail += "  " + rev.Label() // Source-controlled git label
 				if !rev.FetchedAt.IsZero() {
 					detail += " · fetched " + humanizeSince(rev.FetchedAt)
 				}
 			}
 		}
-		line := fmt.Sprintf("%-7s %-16s %s", kind, e.name, dimStyle.Render(detail))
+		// name (config) and detail (config + Source git label) both carry
+		// externally-controlled text; render them inert.
+		name, detail := sanitize(e.name), sanitize(detail)
+		line := fmt.Sprintf("%-7s %-16s %s", kind, name, dimStyle.Render(detail))
 		if i == m.cfgCursor {
-			line = cursorStyle.Render(fmt.Sprintf(" %-7s %-16s %s ", kind, e.name, detail))
+			line = cursorStyle.Render(fmt.Sprintf(" %-7s %-16s %s ", kind, name, detail))
 		}
 		b.WriteString(line + "\n")
 	}
@@ -690,9 +697,9 @@ func (m Model) viewSkillTree() string {
 // Suggestions render dimmed — never the warning colour — distinct from a
 // Dependency, per ADR 0005.
 func (m Model) edgeRow(e skillEdge, cursor bool) string {
-	label := e.to
+	label := sanitize(e.to)
 	if e.crossSource && e.source != "" {
-		label += " (" + e.source + ")"
+		label += " (" + sanitize(e.source) + ")"
 	}
 	kind := "dependency"
 	if e.suggestion {
@@ -715,7 +722,7 @@ func (m Model) edgeRow(e skillEdge, cursor bool) string {
 // treeRow renders one file-tree line: indented by depth, directories suffixed
 // with "/", the cursor row highlighted.
 func (m Model) treeRow(t treeLine, cursor bool) string {
-	name := t.name
+	name := sanitize(t.name) // file/dir name comes from the Source tree
 	if t.isDir {
 		name += "/"
 	}
@@ -741,7 +748,7 @@ func (m Model) skillTreeFooter() string {
 }
 
 func (m Model) viewFileView() string {
-	crumb := skillNameStyle.Render(m.viewSkill.Name) + dimStyle.Render(" / "+m.openPath)
+	crumb := skillNameStyle.Render(sanitize(m.viewSkill.Name)) + dimStyle.Render(" / "+sanitize(m.openPath))
 	inner := m.fileVP.View()
 	if m.fileLoading {
 		inner = dimStyle.Render("loading…")

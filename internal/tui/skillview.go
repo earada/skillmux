@@ -341,7 +341,7 @@ func (m *Model) clampTreeCursor() {
 func (m Model) treeMetaLines() []string {
 	lines := []string{skillLabel(m.viewSkill, false)}
 	if m.viewSkill.Description != "" {
-		lines = append(lines, dimStyle.Render(m.viewSkill.Description))
+		lines = append(lines, dimStyle.Render(sanitize(m.viewSkill.Description)))
 	}
 	for _, t := range m.targets {
 		st := m.status[statusKey{m.viewSkill.Name, m.viewSkill.Source, t.Name}]
@@ -351,9 +351,9 @@ func (m Model) treeMetaLines() []string {
 		}
 		lines = append(lines, "  "+statusStyles[st].Render(glyph+" "+statusText(st))+"  "+dimStyle.Render(t.Name))
 	}
-	lines = append(lines, dimStyle.Render(m.viewSkill.Dir))
+	lines = append(lines, dimStyle.Render(sanitize(m.viewSkill.Dir)))
 	if rev, ok := m.cat.Revisions[m.viewSkill.Source]; ok {
-		lines = append(lines, dimStyle.Render(rev.Label()))
+		lines = append(lines, dimStyle.Render(sanitize(rev.Label())))
 	}
 	return lines
 }
@@ -426,15 +426,18 @@ func renderBody(fc fileContent, width int) string {
 	case fileTooLarge:
 		return dimStyle.Render(fmt.Sprintf("(file too large, %d bytes)", fc.size))
 	case fileError:
-		return errStyle.Render("(could not read: " + fc.err.Error() + ")")
+		return errStyle.Render("(could not read: " + sanitize(fc.err.Error()) + ")")
 	default:
+		// fc.text is Source-controlled; make it inert before it reaches Glamour
+		// or the raw viewport so no escape sequence in the file can act.
+		text := sanitizeMultiline(fc.text)
 		if fc.isMarkdown {
-			if out, err := renderMarkdown(fc.text, width); err == nil {
+			if out, err := renderMarkdown(text, width); err == nil {
 				return out
 			}
 			// Fall back to raw text if glamour fails for any reason.
 		}
-		return fc.text
+		return text
 	}
 }
 
