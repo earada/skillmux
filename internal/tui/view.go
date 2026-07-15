@@ -224,6 +224,11 @@ func (m Model) viewMatrix() string {
 	switch {
 	case m.refreshing:
 		status = "⟳ refreshing…"
+		if m.pendingConfig {
+			// 'c' was pressed mid-Refresh; tell the user why it hasn't opened yet
+			// so the wait reads as queued, not frozen (skillmux-dkq).
+			status += " · config opens next"
+		}
 	case m.applying:
 		status = "⟳ applying…"
 	}

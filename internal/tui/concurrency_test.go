@@ -94,6 +94,37 @@ func TestRepeatedApplyIsBlocked(t *testing.T) {
 	}
 }
 
+// TestConfigKeyDeferredWhileRefreshing reproduces skillmux-dkq: pressing 'c'
+// during the startup Refresh must not silently drop the key (which reads as a
+// freeze). Instead it queues the intent and opens the config the moment the
+// Refresh lands.
+func TestConfigKeyDeferredWhileRefreshing(t *testing.T) {
+	e := testEngine(t, "cc")
+	m := New(e) // startup Refresh in flight
+	if !m.refreshing {
+		t.Fatal("New should leave a background refresh in flight")
+	}
+
+	upd, _ := m.Update(runes("c"))
+	m = upd.(Model)
+	if m.mode == modeConfig {
+		t.Fatal("config must not open mid-Refresh (Config is being scanned)")
+	}
+	if !m.pendingConfig {
+		t.Fatal("'c' during a Refresh should queue the config-open, not drop it")
+	}
+
+	// The Refresh lands: the deferred config-open now runs.
+	upd, _ = m.Update(refreshDoneMsg{cat: e.Refresh()})
+	m = upd.(Model)
+	if m.mode != modeConfig {
+		t.Fatalf("config should open once the Refresh lands, got mode %v", m.mode)
+	}
+	if m.pendingConfig {
+		t.Fatal("pendingConfig should clear once the config opens")
+	}
+}
+
 // TestConfigAndPlanKeysBlockedWhileBusy confirms the matrix refuses to enter
 // config or open the Plan while a command is in flight, so a config edit never
 // races a running Refresh and no Apply starts off in-flight state.

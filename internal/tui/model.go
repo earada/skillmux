@@ -56,6 +56,7 @@ type Model struct {
 	scroll         int // index of the first visible skill row (vertical scroll)
 	refreshing     bool
 	pendingRefresh bool // a Refresh is wanted but one is already running; run it next
+	pendingConfig  bool // 'c' pressed during a Refresh; open config once it lands
 	applying       bool
 	mode           viewMode
 	// preview is the engine's "what will happen" for the current selection —
@@ -193,10 +194,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.onRefreshed(msg.cat)
 		if m.pendingRefresh {
 			// A Refresh was requested while this one ran (e.g. a skill view closed
-			// with a deferred checkout). Run it now that the slot is free.
+			// with a deferred checkout). Run it now that the slot is free — the
+			// deferred config-open (if any) waits for this next Refresh to land.
 			m.pendingRefresh = false
 			m.refreshing = true
 			return m, refreshCmd(m.eng)
+		}
+		if m.pendingConfig {
+			// 'c' was pressed during the Refresh; now that it is safe (Config is
+			// no longer being scanned), honor the intent instead of dropping it.
+			m.pendingConfig = false
+			m = m.enterConfig()
 		}
 		return m, nil
 
@@ -341,11 +349,17 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.requestRefresh()
 	case "c":
 		// A config edit races a running Refresh (it rewrites Config while Refresh
-		// scans it), so config is reachable only when no command is in flight.
-		if !m.busy() {
-			m.cfgCursor = 0
-			m.cfgMsg = ""
-			m.mode = modeConfig
+		// scans it), so config can't open mid-Refresh. Rather than swallow the key
+		// — which reads as a freeze during the startup Refresh (skillmux-dkq) —
+		// remember the intent and open the config the moment the Refresh lands.
+		switch {
+		case m.refreshing:
+			m.pendingConfig = true
+		case m.applying:
+			// An Apply is finishing; its result screen follows immediately, so
+			// don't defer the config onto it — leave the current behaviour.
+		default:
+			m = m.enterConfig()
 		}
 	case "v":
 		return m.enterSkillView(), nil
