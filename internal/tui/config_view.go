@@ -120,6 +120,16 @@ func clearCacheResult(cached bool, err error, name string) string {
 	}
 }
 
+// enterConfig opens the config-management view from a fresh cursor. Called when
+// the matrix is idle, or deferred to the next refreshDoneMsg when 'c' was
+// pressed mid-Refresh (skillmux-dkq).
+func (m Model) enterConfig() Model {
+	m.cfgCursor = 0
+	m.cfgMsg = ""
+	m.mode = modeConfig
+	return m
+}
+
 // leaveConfig returns to the matrix, picking up any Target changes and
 // re-scanning Sources so the matrix reflects the new Config.
 func (m Model) leaveConfig() (tea.Model, tea.Cmd) {
