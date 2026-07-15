@@ -57,6 +57,7 @@ type Model struct {
 	refreshing     bool
 	pendingRefresh bool // a Refresh is wanted but one is already running; run it next
 	pendingConfig  bool // 'c' pressed during a Refresh; open config once it lands
+	pendingPlan    bool // p/enter pressed during a Refresh; open Plan once it lands
 	applying       bool
 	mode           viewMode
 	// preview is the engine's "what will happen" for the current selection —
@@ -205,6 +206,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// no longer being scanned), honor the intent instead of dropping it.
 			m.pendingConfig = false
 			m = m.enterConfig()
+		} else if m.pendingPlan {
+			// p/enter was pressed during the Refresh; open the Plan now, against
+			// the fresh catalog this Refresh just produced.
+			m.pendingPlan = false
+			m = m.enterPlan()
 		}
 		return m, nil
 
@@ -354,7 +360,7 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// remember the intent and open the config the moment the Refresh lands.
 		switch {
 		case m.refreshing:
-			m.pendingConfig = true
+			m.pendingConfig, m.pendingPlan = true, false // latest intent wins
 		case m.applying:
 			// An Apply is finishing; its result screen follows immediately, so
 			// don't defer the config onto it — leave the current behaviour.
@@ -364,16 +370,31 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "v":
 		return m.enterSkillView(), nil
 	case "p", "enter":
-		// Don't open the Plan (and thus a possible Apply) off in-flight state: a
-		// running Refresh is rewriting the catalog and a running Apply the
-		// Manifest, either of which would make the previewed Plan stale.
-		if !m.busy() {
-			m.preview = m.eng.Preview(selected(m.desired), m.cat)
-			m.mode = modePlan
+		// The Plan previews against the catalog a running Refresh is rewriting
+		// (and the Manifest a running Apply is rewriting), so it can't open
+		// mid-command. Rather than swallow the key — a freeze at startup
+		// (skillmux-dkq) — defer the open to when the Refresh lands, so the
+		// preview runs against the fresh catalog.
+		switch {
+		case m.refreshing:
+			m.pendingPlan, m.pendingConfig = true, false // latest intent wins
+		case m.applying:
+			// An Apply is finishing; its result screen follows immediately.
+		default:
+			m = m.enterPlan()
 		}
 	}
 	m.clampCursor()
 	return m, nil
+}
+
+// enterPlan previews the current selection and opens the Plan screen. Called
+// when the matrix is idle, or deferred to the next refreshDoneMsg when p/enter
+// was pressed mid-Refresh so the preview runs against the fresh catalog.
+func (m Model) enterPlan() Model {
+	m.preview = m.eng.Preview(selected(m.desired), m.cat)
+	m.mode = modePlan
+	return m
 }
 
 // onSearchKey drives the "/" search line. Typing filters the matrix live (vim

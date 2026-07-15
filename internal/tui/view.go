@@ -224,10 +224,13 @@ func (m Model) viewMatrix() string {
 	switch {
 	case m.refreshing:
 		status = "⟳ refreshing…"
-		if m.pendingConfig {
-			// 'c' was pressed mid-Refresh; tell the user why it hasn't opened yet
-			// so the wait reads as queued, not frozen (skillmux-dkq).
+		// A key pressed mid-Refresh is queued, not dropped; say which view opens
+		// next so the wait reads as queued, not frozen (skillmux-dkq).
+		switch {
+		case m.pendingConfig:
 			status += " · config opens next"
+		case m.pendingPlan:
+			status += " · plan opens next"
 		}
 	case m.applying:
 		status = "⟳ applying…"

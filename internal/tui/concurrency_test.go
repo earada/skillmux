@@ -125,6 +125,53 @@ func TestConfigKeyDeferredWhileRefreshing(t *testing.T) {
 	}
 }
 
+// TestPlanKeyDeferredWhileRefreshing mirrors the config case for p/enter: the
+// key is queued during the startup Refresh and the Plan opens (against the
+// fresh catalog) once the Refresh lands, rather than being dropped (skillmux-dkq).
+func TestPlanKeyDeferredWhileRefreshing(t *testing.T) {
+	e := testEngine(t, "cc")
+	m := New(e) // startup Refresh in flight
+
+	upd, _ := m.Update(runes("p"))
+	m = upd.(Model)
+	if m.mode == modePlan {
+		t.Fatal("Plan must not open mid-Refresh (catalog is being rewritten)")
+	}
+	if !m.pendingPlan {
+		t.Fatal("'p' during a Refresh should queue the Plan-open, not drop it")
+	}
+
+	upd, _ = m.Update(refreshDoneMsg{cat: e.Refresh()})
+	m = upd.(Model)
+	if m.mode != modePlan {
+		t.Fatalf("Plan should open once the Refresh lands, got mode %v", m.mode)
+	}
+	if m.pendingPlan {
+		t.Fatal("pendingPlan should clear once the Plan opens")
+	}
+}
+
+// TestLatestDeferredIntentWins confirms 'c' then 'p' (or vice versa) during a
+// Refresh resolves to the last key pressed, never opening both.
+func TestLatestDeferredIntentWins(t *testing.T) {
+	e := testEngine(t, "cc")
+	m := New(e) // startup Refresh in flight
+
+	upd, _ := m.Update(runes("c")) // queue config…
+	m = upd.(Model)
+	upd, _ = m.Update(runes("p")) // …then override with plan
+	m = upd.(Model)
+	if m.pendingConfig || !m.pendingPlan {
+		t.Fatalf("latest intent should win: pendingConfig=%v pendingPlan=%v", m.pendingConfig, m.pendingPlan)
+	}
+
+	upd, _ = m.Update(refreshDoneMsg{cat: e.Refresh()})
+	m = upd.(Model)
+	if m.mode != modePlan {
+		t.Fatalf("the last-pressed key (p) should decide the view, got %v", m.mode)
+	}
+}
+
 // TestConfigAndPlanKeysBlockedWhileBusy confirms the matrix refuses to enter
 // config or open the Plan while a command is in flight, so a config edit never
 // races a running Refresh and no Apply starts off in-flight state.
