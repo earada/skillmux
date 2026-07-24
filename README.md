@@ -120,11 +120,22 @@ With a subcommand, skillmux runs non-interactively — for dotfiles,
 provisioning, cron, and CI:
 
 ```
-skillmux status       # list installed skills and their status
-skillmux check        # exit 1 when updates are pending (0 clean, 2 on source errors)
-skillmux apply        # reinstall every installation with an update available
-skillmux apply --yes  # …without the confirmation prompt
+skillmux status              # list installed skills and their status
+skillmux check               # exit 1 when updates are pending (0 clean, 2 on source errors)
+skillmux diff                # unified diff of every installation that differs from its source
+skillmux diff deploy cc      # …just this skill (and target); says "no differences" if identical
+skillmux apply               # reinstall every installation with an update available
+skillmux apply --yes         # …without the confirmation prompt
 ```
+
+`diff` is the headless form of the TUI's diff screen, and answers the question
+`check` leaves open: not just *that* an update is pending but *what* it contains.
+It exits `1` when anything differs, so it slots into a script the same way
+`check` does. Up-to-date installations print nothing; naming a skill (and
+optionally a target) also compares an **untracked** folder sitting at that
+target — the one apply would need confirmation to overwrite. Source-controlled
+file content is made inert before printing, so a repo cannot smuggle terminal
+escape sequences into your log.
 
 Headless `apply` keeps the current installations as its desired state, so it
 can only *reinstall* drifted skills — it never installs or uninstalls anything
@@ -140,7 +151,7 @@ errors — so `skillmux check || skillmux apply --yes` does the obvious thing.
 
 ```
 cmd/skillmux        entrypoint (TUI by default; subcommands go headless)
-internal/cli        non-interactive subcommands: status / check / apply
+internal/cli        non-interactive subcommands: status / check / diff / apply
 internal/domain     core types (Skill, Source, Target, Installation, Status)
 internal/config     user-owned Config (TOML, XDG ~/.config/skillmux)
 internal/manifest   Skillmux-owned Manifest (JSON, XDG ~/.local/state/skillmux)
@@ -148,6 +159,7 @@ internal/paths      XDG path resolution
 internal/source     recursive Skill discovery (SKILL.md frontmatter: name, description, deprecated; group from path)
 internal/fingerprint deterministic content hash of a Skill folder
 internal/diff       folder comparison + unified line hunks (what a reinstall would change)
+internal/safetext   makes Source-controlled text inert before it reaches a terminal
 internal/fetch      resolve a Source (local folder / shallow git clone in cache)
 internal/reconcile  desired selection -> Plan (pure)
 internal/apply      execute a Plan against disk (best-effort, safe)

@@ -1,4 +1,4 @@
-// Package cli implements the non-interactive subcommands — status, check,
+// Package cli implements the non-interactive subcommands — status, check, diff,
 // apply — so skillmux can run headless in dotfiles, provisioning, cron, and CI
 // (skillmux-516). It drives the same Engine as the TUI; the difference is how
 // desired state is derived: headless apply keeps every current Installation
@@ -33,12 +33,15 @@ const usageText = `Usage:
   skillmux              open the TUI
   skillmux status       list installed skills and their status
   skillmux check        report pending updates; exit 1 when any are pending
+  skillmux diff [skill [target]]
+                        show what a reinstall would change (unified diff);
+                        exit 1 when anything differs
   skillmux apply [-y]   reinstall every installation with an update available
       --yes, -y         skip the confirmation prompt
   skillmux help         show this help
 
-Exit codes: 0 ok · 1 updates pending / declined / an operation failed ·
-2 usage error or a source failed to refresh.
+Exit codes: 0 ok · 1 updates pending / something differs / declined / an
+operation failed · 2 usage error or a source failed to refresh.
 `
 
 // Run dispatches one non-interactive subcommand and returns its exit code.
@@ -48,6 +51,8 @@ func Run(e *engine.Engine, args []string, stdin io.Reader, stdout, stderr io.Wri
 		return runStatus(e, stdout, stderr)
 	case "check":
 		return runCheck(e, stdout, stderr)
+	case "diff":
+		return runDiff(e, args[1:], stdout, stderr)
 	case "apply":
 		yes := false
 		for _, a := range args[1:] {

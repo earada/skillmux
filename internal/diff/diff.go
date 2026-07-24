@@ -85,6 +85,37 @@ type FileChange struct {
 	Note string
 }
 
+// Glyph is the one-character marker for a Kind: '+' added, '-' removed,
+// '~' modified. Part of the format rather than of any one presentation, so the
+// TUI and the headless CLI mark a changed file identically.
+func (k Kind) Glyph() string {
+	switch k {
+	case Added:
+		return "+"
+	case Removed:
+		return "-"
+	default:
+		return "~"
+	}
+}
+
+// Prefix is the column-one marker a unified diff gives a line: '+', '-' or ' '.
+func (k LineKind) Prefix() string {
+	switch k {
+	case Add:
+		return "+"
+	case Del:
+		return "-"
+	default:
+		return " "
+	}
+}
+
+// Header renders the hunk's range header, e.g. "@@ -3,5 +3,6 @@".
+func (h Hunk) Header() string {
+	return fmt.Sprintf("@@ -%d,%d +%d,%d @@", h.OldStart, h.OldLines, h.NewStart, h.NewLines)
+}
+
 // Summary is the whole folder comparison: every differing file, ordered by path.
 type Summary struct {
 	Changes []FileChange

@@ -197,7 +197,7 @@ func renderDiff(c engine.Comparison, width int) string {
 			continue
 		}
 		for _, h := range ch.Hunks {
-			b.WriteString(clip.Render(diffHunkStyle.Render(hunkHeader(h))) + "\n")
+			b.WriteString(clip.Render(diffHunkStyle.Render(h.Header())) + "\n")
 			for _, l := range h.Lines {
 				b.WriteString(clip.Render(diffLine(l)) + "\n")
 			}
@@ -209,7 +209,7 @@ func renderDiff(c engine.Comparison, width int) string {
 // changeSummaryRow is one line of the file list above the hunks: the change glyph,
 // the path, and the ± line counts.
 func changeSummaryRow(ch diff.FileChange) string {
-	row := changeGlyphStyle(ch.Kind).Render(changeGlyph(ch.Kind)+" ") + sanitize(ch.Path)
+	row := changeGlyphStyle(ch.Kind).Render(ch.Kind.Glyph()+" ") + sanitize(ch.Path)
 	switch {
 	case ch.Note != "":
 		row += dimStyle.Render("  " + sanitize(ch.Note))
@@ -222,19 +222,8 @@ func changeSummaryRow(ch diff.FileChange) string {
 
 // changeHeader titles a file's hunks in the per-file section below the summary.
 func changeHeader(ch diff.FileChange) string {
-	return changeGlyphStyle(ch.Kind).Render(changeGlyph(ch.Kind)+" "+sanitize(ch.Path)) +
+	return changeGlyphStyle(ch.Kind).Render(ch.Kind.Glyph()+" "+sanitize(ch.Path)) +
 		dimStyle.Render("  "+string(ch.Kind))
-}
-
-func changeGlyph(k diff.Kind) string {
-	switch k {
-	case diff.Added:
-		return "+"
-	case diff.Removed:
-		return "-"
-	default:
-		return "~"
-	}
 }
 
 func changeGlyphStyle(k diff.Kind) lipgloss.Style {
@@ -248,21 +237,16 @@ func changeGlyphStyle(k diff.Kind) lipgloss.Style {
 	}
 }
 
-// hunkHeader is the unified-diff range header, e.g. "@@ -3,5 +3,6 @@".
-func hunkHeader(h diff.Hunk) string {
-	return fmt.Sprintf("@@ -%d,%d +%d,%d @@", h.OldStart, h.OldLines, h.NewStart, h.NewLines)
-}
-
 // diffLine renders one content line: '+' green, '-' red, context dimmed. The text
 // is file content from a Source, so it is sanitized before styling.
 func diffLine(l diff.Line) string {
-	text := sanitize(l.Text)
+	body := l.Kind.Prefix() + sanitize(l.Text)
 	switch l.Kind {
 	case diff.Add:
-		return diffAddStyle.Render("+" + text)
+		return diffAddStyle.Render(body)
 	case diff.Del:
-		return diffDelStyle.Render("-" + text)
+		return diffDelStyle.Render(body)
 	default:
-		return dimStyle.Render(" " + text)
+		return dimStyle.Render(body)
 	}
 }
