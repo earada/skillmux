@@ -32,6 +32,8 @@ func (m Model) View() string {
 		return m.viewSkillTree()
 	case modeFileView:
 		return m.viewFileView()
+	case modeDiff:
+		return m.viewDiff()
 	default:
 		return m.viewMatrix()
 	}
@@ -451,60 +453,121 @@ func (m Model) matrixFooter() string {
 
 // --- plan / overwrite / result ------------------------------------------
 
-func (m Model) viewPlan() string {
-	var b strings.Builder
-	b.WriteString(headingStyle.Render("Plan") + "\n\n")
-	broken := m.brokenList()
+// planLayout is everything the Plan screen needs besides its operation rows: the
+// blocks below the list, the footer, and how many rows are left over for the
+// list itself. It is computed in one pass because the sizing and the rendering
+// need the same values — and because deriving them walks the dependency graph,
+// which should happen once per frame, not once per caller.
+type planLayout struct {
+	broken   []brokenEntry
+	sections []string // rendered blocks below the operation list
+	footer   string
+	visible  int // operation rows that fit on screen
+}
 
-	if len(m.preview.Plan.Operations) == 0 {
-		b.WriteString(dimStyle.Render("Nothing to do — selection already matches reality."))
-	} else {
-		lines := make([]string, len(m.preview.Plan.Operations))
-		for i, op := range m.preview.Plan.Operations {
-			line := fmt.Sprintf("%-9s %s", op.Kind, describeOp(op))
-			if op.Kind == reconcile.Conflict {
-				line = errStyle.Render(line)
-			}
-			lines[i] = line
-		}
-		b.WriteString(strings.Join(lines, "\n"))
+// planLayout builds the Plan's layout for the current state. The sections are the
+// non-blocking broken-dependency warning, the up-front overwrite warnings, and
+// any transient note.
+func (m Model) planLayout() planLayout {
+	l := planLayout{broken: m.brokenList()}
+
+	// Non-blocking: it warns that the selection leaves an unsatisfied closure,
+	// but Apply ('y') still proceeds as-is.
+	if len(l.broken) > 0 {
+		l.sections = append(l.sections, m.renderBrokenSection(l.broken))
 	}
-
-	// The broken section is non-blocking: it warns that the selection leaves an
-	// unsatisfied closure, but Apply ('y') still proceeds as-is.
-	if len(broken) > 0 {
-		b.WriteString("\n\n" + m.renderBrokenSection(broken))
-	}
-
-	// The collision section warns up front that Apply will need explicit
-	// confirmation to overwrite untracked folders (ADR 0002).
+	// Warn up front that Apply will need explicit confirmation to overwrite
+	// untracked folders (ADR 0002)…
 	if len(m.preview.Collisions) > 0 {
-		b.WriteString("\n\n" + renderCollisionSection(m.preview.Collisions))
+		l.sections = append(l.sections, renderCollisionSection(m.preview.Collisions))
 	}
-
-	// Same up-front warning for locally modified installations the Plan would
-	// overwrite: applying will ask for confirmation to discard those edits
-	// (skillmux-0o2).
+	// …and the same for locally modified installations, where applying discards
+	// hand-made edits (skillmux-0o2).
 	if len(m.preview.Modified) > 0 {
-		b.WriteString("\n\n" + renderModifiedSection(m.preview.Modified))
+		l.sections = append(l.sections, renderModifiedSection(m.preview.Modified))
+	}
+	if m.planMsg != "" {
+		l.sections = append(l.sections, dimStyle.Render(sanitize(m.planMsg)))
 	}
 
-	// Footer: 'y' applies whenever there is work; 'f' offers to add the missing
-	// closure when something is fixable; otherwise the empty plan just dismisses.
+	// Footer: 'y' applies whenever there is work, 'd' inspects the operation under
+	// the cursor, 'f' offers to add a missing closure; an empty plan just
+	// dismisses.
+	ops := m.preview.Plan.Operations
 	var caps []keycap
-	if len(m.preview.Plan.Operations) > 0 {
-		caps = append(caps, keycap{"y", "apply"})
+	if len(ops) > 0 {
+		caps = append(caps, keycap{"↑↓", "move"}, keycap{"d", "diff"}, keycap{"y", "apply"})
 	}
-	if fixable(broken) {
+	if fixable(l.broken) {
 		caps = append(caps, keycap{"f", "fix"})
 	}
 	if len(caps) == 0 {
-		caps = append(caps, keycap{"any key", "back"})
+		l.footer = footerKeys(keycap{"any key", "back"})
 	} else {
-		caps = append(caps, keycap{"n", "cancel"})
+		l.footer = footerKeys(append(caps, keycap{"n", "cancel"})...)
 	}
-	return m.frame(m.headerBar("plan"), m.panel(strings.TrimRight(b.String(), "\n")),
-		footerKeys(caps...))
+
+	_, h := m.dims()
+	if h <= 0 {
+		l.visible = max(1, len(ops)) // unbounded: show everything (tests, first frame)
+		return l
+	}
+	used := 0
+	for _, s := range l.sections {
+		used += lipgloss.Height(s) + 1 // the block plus its blank spacer
+	}
+	// header(1) + blank(1) + panel border(2) + "Plan" heading(1) + blank(1) +
+	// scroll status line(1) + the sections + footer. The status line is reserved
+	// unconditionally so it can never shove an operation off-screen.
+	l.visible = max(1, h-2-2-2-1-used-lipgloss.Height(l.footer))
+	return l
+}
+
+// planVisibleOps is how many operation rows fit on screen, for the cursor's
+// scroll arithmetic. It agrees with viewPlan by construction: both read it off
+// the same planLayout.
+func (m Model) planVisibleOps() int { return m.planLayout().visible }
+
+func (m Model) viewPlan() string {
+	ops := m.preview.Plan.Operations
+	l := m.planLayout()
+
+	var b strings.Builder
+	b.WriteString(headingStyle.Render("Plan") + "\n\n")
+	if len(ops) == 0 {
+		b.WriteString(dimStyle.Render("Nothing to do — selection already matches reality."))
+	} else {
+		// The operation list scrolls, so the cursor — and the sections below it —
+		// stay on screen no matter how long the Plan is.
+		end := min(m.planScroll+l.visible, len(ops))
+		lines := make([]string, 0, end-m.planScroll+1)
+		for i := m.planScroll; i < end; i++ {
+			lines = append(lines, planRow(ops[i], i == m.planCursor))
+		}
+		if l.visible < len(ops) {
+			lines = append(lines, dimStyle.Render(fmt.Sprintf("showing %d–%d of %d  ↑↓ to scroll",
+				m.planScroll+1, end, len(ops))))
+		}
+		b.WriteString(strings.Join(lines, "\n"))
+	}
+	for _, s := range l.sections {
+		b.WriteString("\n\n" + s)
+	}
+	return m.frame(m.headerBar("plan"), m.panel(strings.TrimRight(b.String(), "\n")), l.footer)
+}
+
+// planRow renders one operation line. The cursor row is drawn plain-on-accent:
+// describeOp's dimmed reason would fight the highlight, so the focused row asks
+// for an unstyled rendering instead.
+func planRow(op reconcile.Operation, cursor bool) string {
+	if cursor {
+		return cursorStyle.Render(" " + fmt.Sprintf("%-9s %s", op.Kind, describeOpWith(op, lipgloss.NewStyle())) + " ")
+	}
+	line := fmt.Sprintf("%-9s %s", op.Kind, describeOp(op))
+	if op.Kind == reconcile.Conflict {
+		line = errStyle.Render(line)
+	}
+	return " " + line
 }
 
 // renderBrokenSection renders the non-blocking "⚠ broken" list: one line per
@@ -564,14 +627,19 @@ func renderModifiedSection(cols []apply.Collision) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func describeOp(op reconcile.Operation) string {
+// describeOp renders "skill (source) → target  [reason]" with the reason dimmed.
+func describeOp(op reconcile.Operation) string { return describeOpWith(op, dimStyle) }
+
+// describeOpWith is describeOp with the reason's style injected, so a highlighted
+// row can render the whole line unstyled.
+func describeOpWith(op reconcile.Operation, reason lipgloss.Style) string {
 	s := sanitize(op.SkillName)
 	if op.SourceName != "" {
 		s += fmt.Sprintf(" (%s)", sanitize(op.SourceName))
 	}
 	s += " → " + sanitize(op.TargetName)
 	if op.Reason != "" {
-		s += dimStyle.Render("  [" + sanitize(op.Reason) + "]")
+		s += reason.Render("  [" + sanitize(op.Reason) + "]")
 	}
 	return s
 }
@@ -803,7 +871,9 @@ func (m Model) skillTreeFooter() string {
 	} else {
 		caps = append(caps, keycap{"enter", "open"})
 	}
-	caps = append(caps, keycap{"esc", "back"}, keycap{"q", "quit"})
+	// 'd' is always offered: which Target it compares against depends on the
+	// matrix cursor, and a Target with no copy answers inline.
+	caps = append(caps, keycap{"d", "diff"}, keycap{"esc", "back"}, keycap{"q", "quit"})
 	return footerKeys(caps...)
 }
 
@@ -823,6 +893,17 @@ func (m Model) fileFooter() string {
 		keycap{"esc", "back"},
 		keycap{"q", "quit"},
 	)
+}
+
+// --- diff (what a reinstall would change) --------------------------------
+
+func (m Model) viewDiff() string {
+	crumb := skillNameStyle.Render(sanitize(m.diffTitle))
+	inner := m.diffVP.View()
+	if m.diffLoading {
+		inner = dimStyle.Render("comparing…")
+	}
+	return m.frame(m.headerBar("diff"), crumb+"\n"+inner, m.fileFooter())
 }
 
 // humanizeSince renders how long ago t was as a compact relative string

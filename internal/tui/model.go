@@ -29,6 +29,7 @@ const (
 	modeForm
 	modeSkillTree // read-only explorer: metadata + file tree of a Skill
 	modeFileView  // scrollable viewer for one file within a Skill
+	modeDiff      // unified diff: what a reinstall would change (skillmux-4z5)
 )
 
 type statusKey struct{ skill, source, target string }
@@ -68,6 +69,13 @@ type Model struct {
 	report   apply.Report
 	applyErr error
 
+	// Plan-screen cursor over preview.Plan.Operations, so an operation can be
+	// inspected ('d' opens its diff) before applying. planScroll windows the list
+	// to the terminal height; planMsg is a transient note (e.g. nothing to diff).
+	planCursor int
+	planScroll int
+	planMsg    string
+
 	cfgCursor   int                // cursor in the config-management list
 	cfgMsg      string             // transient status line for the config view (e.g. cache cleared)
 	cfgDetected []detect.Candidate // installed tools not yet configured as Targets (skillmux-l7f)
@@ -94,6 +102,16 @@ type Model struct {
 	// the terminal background probe never runs on the hot per-open path — see
 	// resolveGlamourStyle and renderMarkdown.
 	mdStyle string
+
+	// Diff-view state (modeDiff): the comparison of an installed copy against its
+	// Source, computed and rendered off-loop like the file view.
+	diffKey     diffKey           // what the in-flight computation is for (stale guard)
+	diffTitle   string            // "skill (source) → target" breadcrumb
+	diffLoading bool              // true while the comparison runs off-loop
+	diffComp    engine.Comparison // the landed comparison
+	diffErr     error             // why the comparison could not be made
+	diffVP      viewport.Model    // scroll container for the rendered diff
+	diffBack    viewMode          // the screen esc returns to (tree or plan)
 
 	width, height int
 }
@@ -219,6 +237,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case fileRenderedMsg:
 		return m.onFileRendered(msg), nil
 
+	case diffComputedMsg:
+		return m.onDiffComputed(msg), nil
+
 	case applyDoneMsg:
 		m.applying = false
 		m.report = msg.rep
@@ -303,6 +324,8 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.onSkillTreeKey(msg)
 	case modeFileView:
 		return m.onFileViewKey(msg)
+	case modeDiff:
+		return m.onDiffKey(msg)
 	default:
 		return m.onMatrixKey(msg)
 	}
@@ -396,6 +419,7 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) enterPlan() Model {
 	m.preview = m.eng.Preview(selected(m.desired), m.cat)
 	m.mode = modePlan
+	m.planCursor, m.planScroll, m.planMsg = 0, 0, ""
 	return m
 }
 
@@ -432,7 +456,28 @@ func (m *Model) clearFilter() {
 }
 
 func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.planMsg = "" // a transient note lives for exactly one keystroke
 	switch msg.String() {
+	case "up", "k":
+		m.planCursor--
+		m.clampPlanCursor()
+		return m, nil
+	case "down", "j":
+		m.planCursor++
+		m.clampPlanCursor()
+		return m, nil
+	case "home", "g":
+		m.planCursor = 0
+		m.clampPlanCursor()
+		return m, nil
+	case "end", "G":
+		m.planCursor = len(m.preview.Plan.Operations) - 1
+		m.clampPlanCursor()
+		return m, nil
+	case "d":
+		// Inspect before committing: show what reinstalling the operation under
+		// the cursor would actually change (skillmux-4z5).
+		return m.enterDiffFromPlan()
 	case "y", "enter":
 		if m.applying {
 			return m, nil // an Apply is already in flight; never start a second
@@ -494,6 +539,40 @@ func (m Model) onResultKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeMatrix
 		m, cmd := m.requestRefresh()
 		return m, cmd
+	}
+}
+
+// curPlanOp returns the Plan operation under the cursor, if any.
+func (m Model) curPlanOp() (reconcile.Operation, bool) {
+	ops := m.preview.Plan.Operations
+	if m.planCursor < 0 || m.planCursor >= len(ops) {
+		return reconcile.Operation{}, false
+	}
+	return ops[m.planCursor], true
+}
+
+// clampPlanCursor keeps the Plan cursor in range and inside the visible window,
+// mirroring clampCursor for the matrix.
+func (m *Model) clampPlanCursor() {
+	n := len(m.preview.Plan.Operations)
+	if m.planCursor < 0 {
+		m.planCursor = 0
+	}
+	if m.planCursor >= n {
+		m.planCursor = max(0, n-1)
+	}
+	vis := m.planVisibleOps()
+	if m.planCursor < m.planScroll {
+		m.planScroll = m.planCursor
+	}
+	if m.planCursor >= m.planScroll+vis {
+		m.planScroll = m.planCursor - vis + 1
+	}
+	if hi := n - vis; m.planScroll > hi {
+		m.planScroll = hi
+	}
+	if m.planScroll < 0 {
+		m.planScroll = 0
 	}
 }
 

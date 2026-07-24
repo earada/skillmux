@@ -95,6 +95,18 @@ it from scratch. If applying would overwrite a folder
 skillmux didn't install, it lists those folders and asks you to confirm
 (`y` adopts them, `n` cancels) before touching them — see ADR 0002.
 
+Before reinstalling you can see what changed: `d` opens a **diff** of the
+installed copy against the source's current content — files added, removed and
+modified, with the usual `@@`/`+`/`-` hunks. It works from the skill explorer
+(`v`, comparing against the target column your cursor is on) and from the plan
+(`↑↓` moves over the operations, `d` diffs the one under the cursor), so a
+reinstall is an informed decision. The installed copy is what was recorded at
+install time, which is what makes this possible without keeping a second copy of
+anything — see
+[ADR 0007](./docs/adr/0007-installed-copy-is-the-diffs-old-side.md). If that copy
+was edited by hand (or was never installed by skillmux), the diff still opens but
+says so up front: the changes then mix your edits with upstream's.
+
 Skillmux also fingerprints each **installed copy** and compares it to what it
 recorded at install time: a copy you edited by hand shows as **≠ modified**
 (local drift, as opposed to `↑`'s upstream drift, and shown instead of it when
@@ -135,6 +147,7 @@ internal/manifest   Skillmux-owned Manifest (JSON, XDG ~/.local/state/skillmux)
 internal/paths      XDG path resolution
 internal/source     recursive Skill discovery (SKILL.md frontmatter: name, description, deprecated; group from path)
 internal/fingerprint deterministic content hash of a Skill folder
+internal/diff       folder comparison + unified line hunks (what a reinstall would change)
 internal/fetch      resolve a Source (local folder / shallow git clone in cache)
 internal/reconcile  desired selection -> Plan (pure)
 internal/apply      execute a Plan against disk (best-effort, safe)

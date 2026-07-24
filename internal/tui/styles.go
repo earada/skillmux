@@ -60,6 +60,13 @@ var (
 	// deprecatedGlyph precedes a deprecated skill's name in the matrix.
 	deprecatedGlyph = "⊘"
 
+	// Diff-screen styles: additions green, deletions red, hunk headers and the
+	// "modified" glyph in the accent colour (the same green/red the status
+	// legend uses, so "new content" reads consistently across screens).
+	diffAddStyle  = lipgloss.NewStyle().Foreground(cGreen)
+	diffDelStyle  = lipgloss.NewStyle().Foreground(cRed)
+	diffHunkStyle = lipgloss.NewStyle().Foreground(cBrand)
+
 	// tableBorderStyle colours the matrix grid lines.
 	tableBorderStyle = lipgloss.NewStyle().Foreground(cBorder)
 	tableHeadStyle   = lipgloss.NewStyle().Bold(true).Foreground(cBrand).Align(lipgloss.Center)

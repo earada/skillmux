@@ -184,6 +184,10 @@ func (m Model) onSkillTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.treeCursor = m.navLen() - 1
 	case "t":
 		return m.toggleEdge(), nil
+	case "d":
+		// What would a reinstall into the cursor's Target actually change?
+		// (skillmux-4z5)
+		return m.enterDiffFromSkillView()
 	case "enter":
 		if line, ok := m.curTreeLine(); ok && !line.isDir {
 			return m.openFile(line.relPath)
