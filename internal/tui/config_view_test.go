@@ -184,6 +184,97 @@ func TestConfigClearSourceCache(t *testing.T) {
 	}
 }
 
+// fakeToolHome points $HOME at a temp dir holding the given tool root dirs, so
+// detection sees a controlled machine instead of the developer's real home.
+func fakeToolHome(t *testing.T, roots ...string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, r := range roots {
+		if err := os.MkdirAll(filepath.Join(home, r), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestConfigShowsDetectedTools(t *testing.T) {
+	fakeToolHome(t, ".claude")
+	m, _, _ := newConfigModel(t, &config.Config{})
+	m.width, m.height = 100, 24
+
+	m, _ = step(t, m, runes("c")) // open config
+	entries := m.cfgEntries()
+	if len(entries) != 1 || entries[0].kind != entryDetected || entries[0].name != "claude-code" {
+		t.Fatalf("expected one detected entry for claude-code, got %+v", entries)
+	}
+	if !strings.Contains(m.View(), "claude-code") {
+		t.Errorf("config view should list the detected tool; got:\n%s", m.View())
+	}
+}
+
+func TestConfigAddDetectedTarget(t *testing.T) {
+	fakeToolHome(t, ".claude")
+	m, e, configPath := newConfigModel(t, &config.Config{})
+
+	m, _ = step(t, m, runes("c")) // open config; cursor 0 -> detected claude-code
+	m, _ = step(t, m, runes("a")) // adopt it
+
+	if len(e.Config.Targets) != 1 || e.Config.Targets[0].Name != "claude-code" ||
+		e.Config.Targets[0].Path != "~/.claude/skills" {
+		t.Fatalf("detected target not added: %+v", e.Config.Targets)
+	}
+	reloaded, _ := config.Load(configPath)
+	if len(reloaded.Targets) != 1 {
+		t.Errorf("detected target not persisted: %+v", reloaded.Targets)
+	}
+	// Adopted, so it must leave the detected section.
+	if len(m.cfgDetected) != 0 {
+		t.Errorf("candidate should disappear once adopted: %+v", m.cfgDetected)
+	}
+}
+
+func TestConfigDeleteTargetRestoresCandidate(t *testing.T) {
+	fakeToolHome(t, ".claude")
+	m, e, _ := newConfigModel(t, &config.Config{
+		Targets: []config.TargetEntry{{Name: "claude-code", Path: "~/.claude/skills"}},
+	})
+
+	m, _ = step(t, m, runes("c")) // open config; no candidates (tool is configured)
+	if len(m.cfgDetected) != 0 {
+		t.Fatalf("configured tool should not be a candidate: %+v", m.cfgDetected)
+	}
+	m, _ = step(t, m, runes("d")) // delete the target
+	if len(e.Config.Targets) != 0 {
+		t.Fatalf("target not deleted: %+v", e.Config.Targets)
+	}
+	if len(m.cfgDetected) != 1 || m.cfgDetected[0].Name != "claude-code" {
+		t.Errorf("deleting the target should restore the candidate: %+v", m.cfgDetected)
+	}
+}
+
+func TestConfigEditDetectedOpensPrefilledAddForm(t *testing.T) {
+	fakeToolHome(t, ".claude")
+	m, e, _ := newConfigModel(t, &config.Config{})
+
+	m, _ = step(t, m, runes("c")) // open config; cursor 0 -> detected claude-code
+	m, _ = step(t, m, runes("e")) // tweak before adopting
+	if m.mode != modeForm || m.form == nil || m.form.editing {
+		t.Fatalf("e on a detected row should open a prefilled ADD form: mode=%v form=%+v", m.mode, m.form)
+	}
+	if m.form.inputs[0].Value() != "claude-code" || m.form.inputs[1].Value() != "~/.claude/skills" {
+		t.Fatalf("form not prefilled with the proposal: %q %q",
+			m.form.inputs[0].Value(), m.form.inputs[1].Value())
+	}
+
+	m, _ = step(t, m, key(tea.KeyEnter)) // accept as-is
+	if len(e.Config.Targets) != 1 || e.Config.Targets[0].Name != "claude-code" {
+		t.Fatalf("prefilled form should add the target: %+v", e.Config.Targets)
+	}
+	if len(m.cfgDetected) != 0 {
+		t.Errorf("candidate should disappear once adopted via form: %+v", m.cfgDetected)
+	}
+}
+
 func TestConfigAddSourceInfersAndPersists(t *testing.T) {
 	m, e, configPath := newConfigModel(t, &config.Config{})
 	m, _ = step(t, m, runes("c"))

@@ -609,7 +609,8 @@ func (m Model) viewConfig() string {
 		}
 		kind := "target"
 		detail := e.detail
-		if e.kind == entrySource {
+		switch e.kind {
+		case entrySource:
 			kind = "source"
 			if rev, ok := m.cat.Revisions[e.name]; ok {
 				detail += "  " + rev.Label() // Source-controlled git label
@@ -617,11 +618,17 @@ func (m Model) viewConfig() string {
 					detail += " · fetched " + humanizeSince(rev.FetchedAt)
 				}
 			}
+		case entryDetected:
+			kind = "found"
+			detail += "  · press a to add as target"
 		}
 		// name (config) and detail (config + Source git label) both carry
 		// externally-controlled text; render them inert.
 		name, detail := sanitize(e.name), sanitize(detail)
 		line := fmt.Sprintf("%-7s %-16s %s", kind, name, dimStyle.Render(detail))
+		if e.kind == entryDetected && i != m.cfgCursor {
+			line = dimStyle.Render(fmt.Sprintf("%-7s %-16s %s", kind, name, detail))
+		}
 		if i == m.cfgCursor {
 			line = cursorStyle.Render(fmt.Sprintf(" %-7s %-16s %s ", kind, name, detail))
 		}
@@ -630,16 +637,22 @@ func (m Model) viewConfig() string {
 	if m.cfgMsg != "" {
 		b.WriteString("\n" + dimStyle.Render(m.cfgMsg) + "\n")
 	}
+	caps := []keycap{
+		{"t", "add target"},
+		{"s", "add source"},
+	}
+	if len(m.cfgDetected) > 0 {
+		caps = append(caps, keycap{"a", "add detected"})
+	}
+	caps = append(caps,
+		keycap{"e", "edit"},
+		keycap{"d", "delete"},
+		keycap{"C", "clear cache"},
+		keycap{"↑↓", "move"},
+		keycap{"esc", "back"},
+	)
 	return m.frame(m.headerBar("config"), m.panel(strings.TrimRight(b.String(), "\n")),
-		footerKeys(
-			keycap{"t", "add target"},
-			keycap{"s", "add source"},
-			keycap{"e", "edit"},
-			keycap{"d", "delete"},
-			keycap{"C", "clear cache"},
-			keycap{"↑↓", "move"},
-			keycap{"esc", "back"},
-		))
+		footerKeys(caps...))
 }
 
 func (m Model) viewForm() string {

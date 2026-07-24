@@ -38,8 +38,9 @@ in the path).
 
 When the same skill name is offered by more than one source, selection is
 exclusive per target — choosing one source deselects the others, so you pick the
-winner instead of hitting a conflict. Targets are configured by hand (no
-auto-detection yet).
+winner instead of hitting a conflict. The config screen also detects AI tools
+installed on the machine (Claude Code, Codex, Cursor, Gemini, OpenCode) that
+aren't configured as targets yet and offers them for one-key adoption.
 
 ## Configuration
 
@@ -83,7 +84,12 @@ GitHub clone) plus a navigable file tree; `enter` on a file shows its contents
 screen (`c`) lists sources then targets (split by a rule), showing each GitHub
 source's current `ref @ commit` and when it was last fetched, and adds (`t`/`s`),
 edits (`e`) and deletes (`d`) them, writing changes back to `config.toml`; you
-can still edit the file by hand. `C` clears the download cache of the source
+can still edit the file by hand. Below the targets it lists **found** tools —
+known AI tools detected on the machine (by their root directory, e.g.
+`~/.claude`) that aren't configured yet; `a` adds the one under the cursor as a
+target with its conventional skills path, and `e` opens the add form pre-filled
+if you want to tweak the name or path first. A tool stops being offered once a
+target covers its name or path, and reappears if that target is deleted. `C` clears the download cache of the source
 under the cursor (a no-op for local sources), so the next refresh re-downloads
 it from scratch. If applying would overwrite a folder
 skillmux didn't install, it lists those folders and asks you to confirm

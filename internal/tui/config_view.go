@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/earada/skillmux/internal/config"
+	"github.com/earada/skillmux/internal/detect"
 )
 
 // cfgEntryKind distinguishes Target rows from Source rows in the config list.
@@ -15,6 +16,7 @@ type cfgEntryKind int
 const (
 	entryTarget cfgEntryKind = iota
 	entrySource
+	entryDetected // an installed tool detected on this machine, not yet a Target
 )
 
 type cfgEntry struct {
@@ -24,7 +26,8 @@ type cfgEntry struct {
 }
 
 // cfgEntries flattens the configured Sources then Targets for display, grouped
-// the way the matrix groups skills: Sources on top, Targets below a divider.
+// the way the matrix groups skills: Sources on top, Targets below a divider,
+// then any detected-but-unconfigured tools below a second divider.
 func (m Model) cfgEntries() []cfgEntry {
 	var out []cfgEntry
 	for _, s := range m.eng.Config.Sources {
@@ -33,7 +36,18 @@ func (m Model) cfgEntries() []cfgEntry {
 	for _, t := range m.eng.Config.Targets {
 		out = append(out, cfgEntry{entryTarget, t.Name, t.Path})
 	}
+	for _, c := range m.cfgDetected {
+		out = append(out, cfgEntry{entryDetected, c.Name, c.Path})
+	}
 	return out
+}
+
+// refreshDetected re-scans for installed tools not yet configured as Targets.
+// Called whenever the set of configured Targets may have changed, so a just-
+// added Target drops out of the detected section (and a deleted one returns).
+func (m Model) refreshDetected() Model {
+	m.cfgDetected = detect.Candidates(m.eng.Config.DomainTargets())
+	return m
 }
 
 func findTarget(ts []config.TargetEntry, name string) (config.TargetEntry, bool) {
@@ -74,23 +88,46 @@ func (m Model) onConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		if m.cfgCursor >= 0 && m.cfgCursor < len(entries) {
 			e := entries[m.cfgCursor]
-			if e.kind == entryTarget {
+			switch e.kind {
+			case entryTarget:
 				if t, ok := findTarget(m.eng.Config.Targets, e.name); ok {
 					m.form = editTargetForm(t)
 					m.mode = modeForm
 				}
-			} else if s, ok := findSource(m.eng.Config.Sources, e.name); ok {
-				m.form = editSourceForm(s)
+			case entrySource:
+				if s, ok := findSource(m.eng.Config.Sources, e.name); ok {
+					m.form = editSourceForm(s)
+					m.mode = modeForm
+				}
+			case entryDetected:
+				// Adopt the detected tool but let the user tweak name/path first:
+				// an add form pre-filled with the proposal.
+				m.form = newTargetForm()
+				m.form.setValues(e.name, e.detail)
 				m.mode = modeForm
 			}
 		}
 		return m, nil
+	case "a":
+		if m.cfgCursor >= 0 && m.cfgCursor < len(entries) {
+			e := entries[m.cfgCursor]
+			if e.kind == entryDetected {
+				if err := m.eng.AddTarget(e.name, e.detail); err != nil {
+					m.cfgMsg = "add: " + err.Error()
+				} else {
+					m.cfgMsg = "Added target " + e.name + "."
+					m = m.refreshDetected()
+				}
+			}
+		}
 	case "d", "x":
 		if m.cfgCursor >= 0 && m.cfgCursor < len(entries) {
 			e := entries[m.cfgCursor]
-			if e.kind == entryTarget {
+			switch e.kind {
+			case entryTarget:
 				_ = m.eng.RemoveTarget(e.name)
-			} else {
+				m = m.refreshDetected() // the tool may reappear as detected
+			case entrySource:
 				_ = m.eng.RemoveSource(e.name)
 			}
 		}
@@ -127,7 +164,7 @@ func (m Model) enterConfig() Model {
 	m.cfgCursor = 0
 	m.cfgMsg = ""
 	m.mode = modeConfig
-	return m
+	return m.refreshDetected()
 }
 
 // leaveConfig returns to the matrix, picking up any Target changes and
@@ -161,6 +198,7 @@ func (m Model) onFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.form = nil
 		m.mode = modeConfig
+		m = m.refreshDetected() // a form-added Target may cover a detected tool
 		m.cfgCursor = clamp(m.cfgCursor, 0, len(m.cfgEntries())-1)
 		return m, nil
 	}

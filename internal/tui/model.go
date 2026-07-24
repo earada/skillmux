@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/earada/skillmux/internal/apply"
+	"github.com/earada/skillmux/internal/detect"
 	"github.com/earada/skillmux/internal/domain"
 	"github.com/earada/skillmux/internal/engine"
 	"github.com/earada/skillmux/internal/reconcile"
@@ -67,9 +68,10 @@ type Model struct {
 	report   apply.Report
 	applyErr error
 
-	cfgCursor int         // cursor in the config-management list
-	cfgMsg    string      // transient status line for the config view (e.g. cache cleared)
-	form      *configForm // active add form, when mode == modeForm
+	cfgCursor   int                // cursor in the config-management list
+	cfgMsg      string             // transient status line for the config view (e.g. cache cleared)
+	cfgDetected []detect.Candidate // installed tools not yet configured as Targets (skillmux-l7f)
+	form        *configForm        // active add form, when mode == modeForm
 
 	search    textinput.Model // the "/" search line
 	searching bool            // true while the search line is capturing input

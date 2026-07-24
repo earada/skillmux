@@ -28,6 +28,10 @@ _Avoid_: archived, obsolete, retired (in field name)
 An AI coding tool installed on the machine that consumes Skills (e.g. Claude Code, Cursor, Codex). Each Target is a configurable `{ name, path }` where `path` is the directory Skillmux installs Skills into. In v1 all Targets share a homogeneous skill format (a folder containing `SKILL.md`); installing = copying the Skill folder into the Target's path.
 _Avoid_: agent (collides with Claude Code "subagent"), host, destination
 
+**Candidate**:
+A known AI tool detected on the machine but not yet configured as a Target — a ready-to-add `{name, path}` proposal shown in the config screen's **found** section. Detection is by the tool's root directory existing (e.g. `~/.claude` → `claude-code` at `~/.claude/skills`); the skills folder itself may not exist yet, installing creates it. A Candidate is suppressed while any configured Target covers it (same name or same expanded path — the user already made their call), and returns if that Target is deleted. Adopting one (`a`, or `e` to tweak first) just adds a Target; nothing else changes until Apply.
+_Avoid_: detected target (as a noun), suggestion (collides with Suggestion)
+
 **Installation**:
 The fact of a specific Skill being present in a specific Target — the (Skill, Target) pair. Skillmux records, per Installation, which version of the Skill was installed so it can later detect upstream drift.
 _Avoid_: deployment, copy
