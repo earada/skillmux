@@ -252,7 +252,7 @@ func (m Model) onRefreshed(cat engine.Catalog) Model {
 	for _, c := range cells {
 		m.status[statusKey{c.SkillName, c.SourceName, c.TargetName}] = c.Status
 		switch c.Status {
-		case domain.StatusUpToDate, domain.StatusUpdateAvailable, domain.StatusUnavailable:
+		case domain.StatusUpToDate, domain.StatusUpdateAvailable, domain.StatusUnavailable, domain.StatusModified:
 			m.installed[skillRef{c.SkillName, c.SourceName}] = true
 		}
 	}
@@ -441,10 +441,11 @@ func (m Model) onPlanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeMatrix
 			return m, nil
 		}
-		// If any operation would overwrite an untracked folder, confirm first
-		// (ADR 0002). The Preview already computed the collisions. Otherwise apply
-		// the previewed Plan straight away.
-		if len(m.preview.Collisions) > 0 {
+		// If any operation would overwrite an untracked folder (ADR 0002) or a
+		// locally modified installation (skillmux-0o2), confirm first. The
+		// Preview already computed both lists. Otherwise apply the previewed
+		// Plan straight away.
+		if len(m.preview.Collisions) > 0 || len(m.preview.Modified) > 0 {
 			m.mode = modeOverwrite
 			return m, nil
 		}
@@ -469,7 +470,10 @@ func (m Model) onOverwriteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.applying {
 			return m, nil // an Apply is already in flight; never start a second
 		}
-		opts := apply.Options{ConfirmOverwrite: approveOverwrites(m.preview.Collisions)}
+		opts := apply.Options{
+			ConfirmOverwrite: approveOverwrites(m.preview.Collisions),
+			ConfirmModified:  approveOverwrites(m.preview.Modified),
+		}
 		m.applying = true
 		m.mode = modeMatrix
 		return m, applyCmd(m.eng, m.preview, opts)

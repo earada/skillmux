@@ -363,6 +363,14 @@ func (e *Engine) cellStatus(sk AvailableSkill, target, targetPath string) domain
 		// no matter what the recorded fingerprint says. A reinstall is due.
 		return domain.StatusUpdateAvailable
 	}
+	// Local drift beats upstream drift: fingerprint the installed copy itself
+	// and compare it to what was recorded at install time (skillmux-0o2). A
+	// mismatch — or a copy that vanished or turned unreadable — means reality
+	// diverged from the Manifest by hand, and a reinstall would discard that,
+	// so the warning must win over "update available".
+	if localFP, err := fingerprint.Dir(filepath.Join(targetPath, sk.Name)); err != nil || localFP != in.Fingerprint {
+		return domain.StatusModified
+	}
 	if in.Fingerprint == sk.Fingerprint {
 		return domain.StatusUpToDate
 	}
@@ -381,21 +389,28 @@ type Preview struct {
 	// Collisions are the untracked folders the Plan would overwrite, which the
 	// user must confirm before Apply proceeds (ADR 0002).
 	Collisions []apply.Collision
+	// Modified are the tracked installations the Plan would overwrite whose
+	// content was edited by hand since install — overwriting discards those
+	// local changes, so the user must confirm first (skillmux-0o2).
+	Modified []apply.Collision
 
 	resolved map[apply.SkillID]apply.ResolvedSkill
 	targets  map[string]string
 }
 
-// Preview computes the reconcile Plan for a desired selection and the untracked
-// folders it would overwrite, pinning the execution inputs so a later Apply runs
-// verbatim. It reads the current catalog and Manifest; the only disk it touches
-// is the stat behind collision detection.
+// Preview computes the reconcile Plan for a desired selection and the folders
+// it would overwrite that need confirmation — untracked (Collisions) and
+// locally modified (Modified) — pinning the execution inputs so a later Apply
+// runs verbatim. It reads the current catalog and Manifest; the only disk it
+// touches is the stat behind collision detection and the fingerprinting behind
+// modification detection.
 func (e *Engine) Preview(desired []reconcile.Cell, cat Catalog) Preview {
 	targets := e.targetPaths()
 	plan := reconcile.Reconcile(desired, availableForReconcile(cat), e.Manifest.Installations, targets)
 	return Preview{
 		Plan:       plan,
 		Collisions: apply.Collisions(plan, targets, e.Manifest),
+		Modified:   apply.ModifiedOverwrites(plan, targets, e.Manifest),
 		resolved:   e.resolved(cat),
 		targets:    targets,
 	}

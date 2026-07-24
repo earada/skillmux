@@ -115,7 +115,14 @@ func TestReinstallOverwritesTrackedFolder(t *testing.T) {
 	os.WriteFile(filepath.Join(targetPath, "deploy", "SKILL.md"), []byte("v1"), 0o644)
 	os.WriteFile(filepath.Join(targetPath, "deploy", "stale.txt"), []byte("x"), 0o644)
 	man := &manifest.Manifest{}
-	man.Put(installation("deploy", "t", "s", "old"))
+	// Record the actual on-disk fingerprint so the fixture models a pristine
+	// (unmodified) installation — a divergent fingerprint would now trip the
+	// modified-locally confirmation (skillmux-0o2) instead of reinstalling.
+	prevFP, err := fingerprint.Dir(filepath.Join(targetPath, "deploy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	man.Put(installation("deploy", "t", "s", prevFP))
 
 	rep := Apply(
 		reconcile.Plan{Operations: []reconcile.Operation{

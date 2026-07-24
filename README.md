@@ -95,6 +95,13 @@ it from scratch. If applying would overwrite a folder
 skillmux didn't install, it lists those folders and asks you to confirm
 (`y` adopts them, `n` cancels) before touching them — see ADR 0002.
 
+Skillmux also fingerprints each **installed copy** and compares it to what it
+recorded at install time: a copy you edited by hand shows as **≠ modified**
+(local drift, as opposed to `↑`'s upstream drift, and shown instead of it when
+both apply). Reinstalling over a modified copy discards your edits, so the
+Plan warns about it up front and Apply asks for the same explicit confirmation
+as untracked folders before overwriting.
+
 ## Headless CLI
 
 With a subcommand, skillmux runs non-interactively — for dotfiles,
@@ -110,7 +117,9 @@ skillmux apply --yes  # …without the confirmation prompt
 Headless `apply` keeps the current installations as its desired state, so it
 can only *reinstall* drifted skills — it never installs or uninstalls anything
 (selection changes belong to the TUI). It refuses to run while a source fails
-to refresh, since that would "update" from a stale cached snapshot. Exit codes
+to refresh, since that would "update" from a stale cached snapshot, and it
+never overwrites a locally modified copy: those operations are skipped with a
+note (discarding hand-made edits is a decision for the TUI, not for cron). Exit codes
 are script-friendly: `0` nothing pending / all ok, `1` updates pending
 (`check`), declined or a failed operation (`apply`), `2` usage or source
 errors — so `skillmux check || skillmux apply --yes` does the obvious thing.

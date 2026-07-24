@@ -18,7 +18,7 @@ func initialDesired(cells []engine.CellStatus) map[reconcile.Cell]bool {
 	d := map[reconcile.Cell]bool{}
 	for _, c := range cells {
 		switch c.Status {
-		case domain.StatusUpToDate, domain.StatusUpdateAvailable, domain.StatusUnavailable:
+		case domain.StatusUpToDate, domain.StatusUpdateAvailable, domain.StatusUnavailable, domain.StatusModified:
 			d[reconcile.Cell{Skill: c.SkillName, Source: c.SourceName, Target: c.TargetName}] = true
 		}
 	}

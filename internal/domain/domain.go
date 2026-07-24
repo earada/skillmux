@@ -132,4 +132,10 @@ const (
 	// after install. The last-known row stays visible so the user can keep it
 	// as-is or uninstall it; it can never be reinstalled while unavailable.
 	StatusUnavailable Status = "unavailable"
+	// StatusModified means the installed copy no longer matches the Fingerprint
+	// recorded at install time — the user (or another tool) edited or removed
+	// it by hand. It warns that a reinstall would discard those local changes,
+	// so Apply requires explicit confirmation before overwriting such a copy.
+	// Local drift, as opposed to StatusUpdateAvailable's upstream drift.
+	StatusModified Status = "modified-locally"
 )

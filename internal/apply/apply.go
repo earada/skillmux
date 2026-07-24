@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/earada/skillmux/internal/domain"
+	"github.com/earada/skillmux/internal/fingerprint"
 	"github.com/earada/skillmux/internal/manifest"
 	"github.com/earada/skillmux/internal/reconcile"
 )
@@ -40,6 +41,12 @@ type Options struct {
 	// Manifest. Returning false — the default behaviour when nil — refuses the
 	// write, leaving the untracked folder untouched.
 	ConfirmOverwrite func(targetName, skillName, destDir string) bool
+	// ConfirmModified is consulted when a Reinstall would write over a tracked
+	// installation whose content no longer matches the Fingerprint recorded at
+	// install time — the user edited it by hand, and overwriting discards those
+	// edits (skillmux-0o2). Returning false — the default behaviour when nil —
+	// refuses the write, preserving the local changes.
+	ConfirmModified func(targetName, skillName, destDir string) bool
 	// now overrides the install timestamp; defaults to time.Now.
 	now func() time.Time
 }
@@ -122,6 +129,59 @@ func collides(op reconcile.Operation, targets map[string]string, man *manifest.M
 	}, true
 }
 
+// ModifiedOverwrites reports every operation in plan whose destination is a
+// tracked installation that was edited by hand since install — writing there
+// discards the user's local changes, so it needs explicit confirmation
+// (skillmux-0o2). Like Collisions, it is the pre-flight projection of the very
+// predicate install enforces at write time, so the preview and the enforcement
+// can never disagree.
+func ModifiedOverwrites(plan reconcile.Plan, targets map[string]string, man *manifest.Manifest) []Collision {
+	var out []Collision
+	for _, op := range plan.Operations {
+		if c, ok := modifiedOverwrite(op, targets, man); ok {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// modifiedOverwrite is the single definition of the local-drift invariant: it
+// reports whether op would write over a tracked installation whose current
+// content fingerprint differs from the one recorded at install time. A missing
+// folder is not modified — there are no local edits to lose, so restoring it
+// needs no confirmation. Untracked folders are collides' concern, not ours.
+func modifiedOverwrite(op reconcile.Operation, targets map[string]string, man *manifest.Manifest) (Collision, bool) {
+	switch op.Kind {
+	case reconcile.Install, reconcile.Reinstall:
+	default:
+		return Collision{}, false
+	}
+	targetPath, ok := targets[op.TargetName]
+	if !ok {
+		return Collision{}, false
+	}
+	in, tracked := man.Find(op.TargetName, op.SkillName)
+	if !tracked {
+		return Collision{}, false
+	}
+	dir := filepath.Join(targetPath, op.SkillName)
+	if !exists(dir) {
+		return Collision{}, false
+	}
+	fp, err := fingerprint.Dir(dir)
+	if err == nil && fp == in.Fingerprint {
+		return Collision{}, false
+	}
+	// A fingerprint error means the folder is unreadable — we cannot prove the
+	// copy is pristine, so err on the side of asking.
+	return Collision{
+		SkillName:  op.SkillName,
+		SourceName: op.SourceName,
+		TargetName: op.TargetName,
+		Dir:        dir,
+	}, true
+}
+
 // Apply carries out plan, mutating man in memory but NOT persisting it — the
 // caller (engine.Apply) owns persistence. It is the internal disk executor of
 // the Preview→Apply seam; callers outside the engine (its own tests) must
@@ -173,6 +233,14 @@ func install(op reconcile.Operation, targets map[string]string, resolved map[Ski
 		// without explicit confirmation. Same predicate the pre-flight uses.
 		if opts.ConfirmOverwrite == nil || !opts.ConfirmOverwrite(op.TargetName, op.SkillName, dest) {
 			return fmt.Errorf("refusing to overwrite untracked folder %s (confirm to adopt)", dest)
+		}
+	}
+	if _, modified := modifiedOverwrite(op, targets, man); modified {
+		// Same invariant for tracked folders edited by hand: overwriting discards
+		// the user's local changes, so it needs its own confirmation
+		// (skillmux-0o2). Same predicate ModifiedOverwrites previews.
+		if opts.ConfirmModified == nil || !opts.ConfirmModified(op.TargetName, op.SkillName, dest) {
+			return fmt.Errorf("refusing to overwrite locally modified skill %s (confirm to discard local changes)", dest)
 		}
 	}
 

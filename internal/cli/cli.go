@@ -96,8 +96,14 @@ func runCheck(e *engine.Engine, stdout, stderr io.Writer) int {
 	srcErr := reportSourceErrors(cat, stderr)
 	var pending []engine.CellStatus
 	for _, r := range installedRows(e, cat) {
-		if r.Status == domain.StatusUpdateAvailable {
+		switch r.Status {
+		case domain.StatusUpdateAvailable:
 			pending = append(pending, r)
+		case domain.StatusModified:
+			// Informational only: a locally modified copy needs a human decision
+			// (keep the edits or discard them in the TUI), not an automated apply,
+			// so it never flips the exit code to "updates pending".
+			fmt.Fprintf(stdout, "modified locally: %s → %s (%s) — resolve in the TUI\n", r.SkillName, r.TargetName, r.SourceName)
 		}
 	}
 	for _, r := range pending {
@@ -129,6 +135,24 @@ func runApply(e *engine.Engine, yes bool, stdin io.Reader, stdout, stderr io.Wri
 		desired = append(desired, reconcile.Cell{Skill: r.SkillName, Source: r.SourceName, Target: r.TargetName})
 	}
 	pre := e.Preview(desired, cat)
+	// A reinstall over a locally modified copy discards hand-made edits — a
+	// human decision, not one automation may take. Skip those operations with a
+	// note instead of failing them, so a cron'd apply stays clean while the
+	// user resolves the divergence in the TUI (skillmux-0o2).
+	if len(pre.Modified) > 0 {
+		skip := map[[2]string]bool{}
+		for _, c := range pre.Modified {
+			skip[[2]string{c.TargetName, c.SkillName}] = true
+			fmt.Fprintf(stdout, "skipping %s → %s: modified locally — resolve in the TUI\n", c.SkillName, c.TargetName)
+		}
+		kept := pre.Plan.Operations[:0]
+		for _, op := range pre.Plan.Operations {
+			if !skip[[2]string{op.TargetName, op.SkillName}] {
+				kept = append(kept, op)
+			}
+		}
+		pre.Plan.Operations = kept
+	}
 	if len(pre.Plan.Operations) == 0 {
 		fmt.Fprintln(stdout, "Nothing to do.")
 		return exitOK
@@ -181,7 +205,7 @@ func installedRows(e *engine.Engine, cat engine.Catalog) []engine.CellStatus {
 	var out []engine.CellStatus
 	for _, c := range e.Status(cat) {
 		switch c.Status {
-		case domain.StatusUpToDate, domain.StatusUpdateAvailable, domain.StatusUnavailable:
+		case domain.StatusUpToDate, domain.StatusUpdateAvailable, domain.StatusUnavailable, domain.StatusModified:
 			out = append(out, c)
 		}
 	}
@@ -224,6 +248,9 @@ func summarize(rows []engine.CellStatus) string {
 	}
 	if n := counts[domain.StatusUnavailable]; n > 0 {
 		parts = append(parts, fmt.Sprintf("%d unavailable upstream", n))
+	}
+	if n := counts[domain.StatusModified]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d modified locally", n))
 	}
 	return strings.Join(parts, " · ")
 }

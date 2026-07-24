@@ -195,6 +195,62 @@ func writeSkillNamed(t *testing.T, dir, name string) {
 	}
 }
 
+// modifyInstalled hand-edits the installed copy of "deploy" in the target.
+func modifyInstalled(t *testing.T, targetPath string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(targetPath, "deploy", "SKILL.md"), []byte("my local tweaks"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStatusShowsModified(t *testing.T) {
+	e, targetPath, _ := newEnv(t)
+	install(t, e)
+	modifyInstalled(t, targetPath)
+
+	code, out, _ := run(e, "", "status")
+	if code != exitOK {
+		t.Fatalf("code=%d", code)
+	}
+	if !strings.Contains(out, "modified-locally") || !strings.Contains(out, "1 modified locally") {
+		t.Errorf("status should surface local modification:\n%s", out)
+	}
+}
+
+func TestCheckReportsModifiedWithoutFailing(t *testing.T) {
+	e, targetPath, _ := newEnv(t)
+	install(t, e)
+	modifyInstalled(t, targetPath)
+
+	code, out, _ := run(e, "", "check")
+	// Modified is a human decision, not a pending update: informational only.
+	if code != exitOK {
+		t.Fatalf("modified alone must not flip check to pending, code=%d\n%s", code, out)
+	}
+	if !strings.Contains(out, "modified locally: deploy → cc (local)") {
+		t.Errorf("check should mention the modification:\n%s", out)
+	}
+}
+
+func TestApplySkipsModifiedReinstall(t *testing.T) {
+	e, targetPath, skillDir := newEnv(t)
+	install(t, e)
+	modifyInstalled(t, targetPath)
+	writeSkill(t, skillDir, "v2") // upstream drift too — a reinstall is planned
+
+	code, out, _ := run(e, "", "apply", "--yes")
+	if code != exitOK {
+		t.Fatalf("apply should succeed by skipping, code=%d\n%s", code, out)
+	}
+	if !strings.Contains(out, "skipping deploy → cc: modified locally") {
+		t.Errorf("apply should announce the skip:\n%s", out)
+	}
+	got, _ := os.ReadFile(filepath.Join(targetPath, "deploy", "SKILL.md"))
+	if string(got) != "my local tweaks" {
+		t.Errorf("headless apply must never clobber local edits, got %q", got)
+	}
+}
+
 func TestApplyRefusesFailingSource(t *testing.T) {
 	e, _, skillDir := newEnv(t)
 	install(t, e)

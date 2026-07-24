@@ -412,6 +412,7 @@ func (m Model) matrixFooter() string {
 	legend := strings.Join([]string{
 		statusStyles[domain.StatusUpToDate].Render("= up-to-date"),
 		statusStyles[domain.StatusUpdateAvailable].Render("↑ update"),
+		statusStyles[domain.StatusModified].Render("≠ modified"),
 		dimStyle.Render("· not-installed"),
 		statusStyles[domain.StatusConflict].Render("! conflict"),
 		statusStyles[domain.StatusUnavailable].Render("× unavailable"),
@@ -481,6 +482,13 @@ func (m Model) viewPlan() string {
 		b.WriteString("\n\n" + renderCollisionSection(m.preview.Collisions))
 	}
 
+	// Same up-front warning for locally modified installations the Plan would
+	// overwrite: applying will ask for confirmation to discard those edits
+	// (skillmux-0o2).
+	if len(m.preview.Modified) > 0 {
+		b.WriteString("\n\n" + renderModifiedSection(m.preview.Modified))
+	}
+
 	// Footer: 'y' applies whenever there is work; 'f' offers to add the missing
 	// closure when something is fixable; otherwise the empty plan just dismisses.
 	var caps []keycap
@@ -541,6 +549,21 @@ func renderCollisionSection(cols []apply.Collision) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// renderModifiedSection renders the up-front "≠ modified locally" heads-up in
+// the Plan: one line per tracked installation edited by hand that the Plan
+// would overwrite. Apply gates the actual write behind the explicit overwrite
+// confirmation (modeOverwrite), same as collisions.
+func renderModifiedSection(cols []apply.Collision) string {
+	var b strings.Builder
+	b.WriteString(errStyle.Render("≠ modified locally") +
+		dimStyle.Render("  — reinstalling these discards hand-made edits; confirmation required") + "\n")
+	for _, c := range cols {
+		b.WriteString("  " + errStyle.Render(sanitize(c.SkillName)) +
+			dimStyle.Render(" ("+sanitize(c.SourceName)+") → "+sanitize(c.TargetName)+"  "+sanitize(c.Dir)) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func describeOp(op reconcile.Operation) string {
 	s := sanitize(op.SkillName)
 	if op.SourceName != "" {
@@ -555,15 +578,30 @@ func describeOp(op reconcile.Operation) string {
 
 func (m Model) viewOverwrite() string {
 	var b strings.Builder
-	b.WriteString(headingStyle.Render("Overwrite untracked folders?") + "\n\n")
-	b.WriteString(dimStyle.Render("These folders already exist but were not installed by skillmux:") + "\n\n")
-	for _, c := range m.preview.Collisions {
-		b.WriteString(errStyle.Render(sanitize(c.SkillName)) +
-			dimStyle.Render(" ("+sanitize(c.SourceName)+") → "+sanitize(c.TargetName)) + "\n")
-		b.WriteString(dimStyle.Render("  "+sanitize(c.Dir)) + "\n")
+	b.WriteString(headingStyle.Render("Overwrite these folders?") + "\n\n")
+	if len(m.preview.Collisions) > 0 {
+		b.WriteString(dimStyle.Render("These folders already exist but were not installed by skillmux:") + "\n\n")
+		for _, c := range m.preview.Collisions {
+			b.WriteString(overwriteRow(c))
+		}
+	}
+	if len(m.preview.Modified) > 0 {
+		if len(m.preview.Collisions) > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(dimStyle.Render("These installed skills were modified by hand; reinstalling DISCARDS those edits:") + "\n\n")
+		for _, c := range m.preview.Modified {
+			b.WriteString(overwriteRow(c))
+		}
 	}
 	return m.frame(m.headerBar("overwrite"), m.panel(strings.TrimRight(b.String(), "\n")),
-		footerKeys(keycap{"y", "adopt"}, keycap{"n", "cancel"}))
+		footerKeys(keycap{"y", "overwrite"}, keycap{"n", "cancel"}))
+}
+
+func overwriteRow(c apply.Collision) string {
+	return errStyle.Render(sanitize(c.SkillName)) +
+		dimStyle.Render(" ("+sanitize(c.SourceName)+") → "+sanitize(c.TargetName)) + "\n" +
+		dimStyle.Render("  "+sanitize(c.Dir)) + "\n"
 }
 
 func (m Model) viewResult() string {

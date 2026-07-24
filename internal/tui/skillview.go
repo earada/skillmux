@@ -367,6 +367,8 @@ func statusText(s domain.Status) string {
 		return "conflict"
 	case domain.StatusUnavailable:
 		return "unavailable (removed upstream)"
+	case domain.StatusModified:
+		return "modified locally (differs from what was installed)"
 	default:
 		return "not installed"
 	}

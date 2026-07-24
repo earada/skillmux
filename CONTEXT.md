@@ -37,8 +37,12 @@ The fact of a specific Skill being present in a specific Target — the (Skill, 
 _Avoid_: deployment, copy
 
 **Update available**:
-The status of an Installation whose Source has changed since the Skill was last installed into that Target (upstream drift). The primary signal Skillmux surfaces; it prompts a reinstall to catch up. Distinct from local modification of the installed copy, which is out of scope for v1.
+The status of an Installation whose Source has changed since the Skill was last installed into that Target (upstream drift). The primary signal Skillmux surfaces; it prompts a reinstall to catch up. Distinct from Modified locally, which is drift of the installed copy itself.
 _Avoid_: outdated, stale, dirty
+
+**Modified locally**:
+The status of an Installation whose installed copy no longer matches the Fingerprint recorded at install time — the user (or another tool) edited or removed it by hand. The counterpart of Update available: local drift instead of upstream drift, and it wins when both are present, because a reinstall would discard the user's changes. Apply requires an explicit confirmation (like the untracked-folder overwrite of ADR 0002) before overwriting a modified copy; the headless CLI never overwrites one — it skips the operation with a note and leaves the decision to the TUI. A missing copy is surfaced as Modified locally too (reality diverged from the Manifest), but restoring it needs no confirmation since there are no edits to lose.
+_Avoid_: dirty, tampered, local drift (in field name)
 
 **Apply**:
 The single reconciliation step that brings reality in line with the user's desired selection: installs Skills marked for a Target that aren't there, uninstalls those unmarked that are, and reinstalls those with an Update available. The TUI edits desired state; nothing changes until Apply, which first shows a confirmable plan and then runs best-effort (per-operation result, no global rollback).
