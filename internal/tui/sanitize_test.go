@@ -42,7 +42,7 @@ func TestSkillLabelSanitizesNameGroupAndSource(t *testing.T) {
 		Group:  "grp\x1b[31m",
 		Source: "src\rspoof",
 	}
-	got := skillLabel(s, false)
+	got := skillLabel(s, false, false)
 	for _, bad := range []rune{0x1b, 0x07, '\r'} {
 		if strings.ContainsRune(got, bad) {
 			t.Fatalf("skillLabel leaked %#x: %q", bad, got)

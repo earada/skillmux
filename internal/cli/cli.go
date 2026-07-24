@@ -209,8 +209,7 @@ func runApply(e *engine.Engine, yes bool, stdin io.Reader, stdout, stderr io.Wri
 func installedRows(e *engine.Engine, cat engine.Catalog) []engine.CellStatus {
 	var out []engine.CellStatus
 	for _, c := range e.Status(cat) {
-		switch c.Status {
-		case domain.StatusUpToDate, domain.StatusUpdateAvailable, domain.StatusUnavailable, domain.StatusModified:
+		if c.Status.Installed() {
 			out = append(out, c)
 		}
 	}
@@ -253,6 +252,9 @@ func summarize(rows []engine.CellStatus) string {
 	}
 	if n := counts[domain.StatusUnavailable]; n > 0 {
 		parts = append(parts, fmt.Sprintf("%d unavailable upstream", n))
+	}
+	if n := counts[domain.StatusPinned]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d pinned", n))
 	}
 	if n := counts[domain.StatusModified]; n > 0 {
 		parts = append(parts, fmt.Sprintf("%d modified locally", n))

@@ -42,7 +42,7 @@ func TestSkillLabel(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := skillLabel(tc.s, tc.conflict)
+			got := skillLabel(tc.s, tc.conflict, false)
 			for _, w := range tc.want {
 				if !strings.Contains(got, w) {
 					t.Errorf("label %q missing %q", got, w)
@@ -69,7 +69,7 @@ func TestRenderGroupPreservesPathText(t *testing.T) {
 }
 
 func TestSkillLabelNameLeadsGroup(t *testing.T) {
-	got := skillLabel(engine.AvailableSkill{Name: "strict-mode", Source: "mp", Group: "typescript"}, false)
+	got := skillLabel(engine.AvailableSkill{Name: "strict-mode", Source: "mp", Group: "typescript"}, false, false)
 	if strings.Index(got, "strict-mode") >= strings.Index(got, "typescript") {
 		t.Errorf("name should come before the group in %q", got)
 	}

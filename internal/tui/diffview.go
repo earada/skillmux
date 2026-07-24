@@ -175,6 +175,11 @@ func renderDiff(c engine.Comparison, width int) string {
 	default:
 		b.WriteString(clip.Render(dimStyle.Render("what a reinstall would change — installed copy vs upstream")) + "\n")
 	}
+	if c.Pinned {
+		// A pinned row is never reinstalled, so the changes are not pending work:
+		// they are what the Pin is holding back, which is the whole reason to look.
+		b.WriteString(clip.Render(pinnedStyle.Render(pinnedGlyph+" pinned — this row is frozen; the changes below are what you are holding back")) + "\n")
+	}
 	b.WriteString(clip.Render(diffDelStyle.Render("--- "+sanitize(c.InstalledDir))) + "\n")
 	b.WriteString(clip.Render(diffAddStyle.Render("+++ "+sanitize(c.SourceDir))) + "\n\n")
 

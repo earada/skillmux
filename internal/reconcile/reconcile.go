@@ -24,6 +24,11 @@ type AvailableSkill struct {
 	Name        string
 	Source      string
 	Fingerprint string
+	// Pinned freezes this row against upstream drift: Reconcile will not emit the
+	// catch-up Reinstall a fingerprint mismatch would otherwise call for. It says
+	// nothing about the user's own explicit changes — a first Install, an
+	// Uninstall, a switch of Source, or a re-pointed Target still happen.
+	Pinned bool
 }
 
 // OpKind is the kind of operation an Apply will perform.
@@ -74,9 +79,13 @@ type Plan struct {
 func Reconcile(desired []Cell, available []AvailableSkill, installed []domain.Installation, targetPaths map[string]string) Plan {
 	fingerprints := map[key]string{} // (name, source) -> current fingerprint
 	availableSet := map[key]bool{}   // (name, source) currently offered by a Source
+	pinned := map[key]bool{}         // (name, source) frozen against upstream drift
 	for _, a := range available {
 		fingerprints[key{a.Name, a.Source}] = a.Fingerprint
 		availableSet[key{a.Name, a.Source}] = true
+		if a.Pinned {
+			pinned[key{a.Name, a.Source}] = true
+		}
 	}
 
 	// Detect conflicts: within one Target, the same Skill name desired from
@@ -149,6 +158,13 @@ func Reconcile(desired []Cell, available []AvailableSkill, installed []domain.In
 				Kind: Reinstall, SkillName: c.Skill, SourceName: c.Source,
 				TargetName: c.Target, Reason: ReasonTargetMoved,
 			})
+			continue
+		}
+		// A Pin freezes the row against upstream drift: the fingerprints may
+		// disagree, but catching up is exactly what the user asked us not to do
+		// (skillmux-h6n). Everything above this point still applies — a Pin holds a
+		// version, it does not veto the user's own explicit changes.
+		if pinned[key{c.Skill, c.Source}] {
 			continue
 		}
 		if in.Fingerprint != fingerprints[key{c.Skill, c.Source}] {

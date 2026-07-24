@@ -340,7 +340,7 @@ func (m *Model) clampTreeCursor() {
 // label, its description, its per-Target status, and the folder it lives in.
 // Rendering and treeVisibleRows both call this so the scroll arithmetic agrees.
 func (m Model) treeMetaLines() []string {
-	lines := []string{skillLabel(m.viewSkill, false)}
+	lines := []string{skillLabel(m.viewSkill, false, m.eng.IsPinned(m.viewSkill.Name, m.viewSkill.Source))}
 	if m.viewSkill.Description != "" {
 		lines = append(lines, dimStyle.Render(sanitize(m.viewSkill.Description)))
 	}
@@ -371,6 +371,8 @@ func statusText(s domain.Status) string {
 		return "conflict"
 	case domain.StatusUnavailable:
 		return "unavailable (removed upstream)"
+	case domain.StatusPinned:
+		return "pinned (frozen at the installed version)"
 	case domain.StatusModified:
 		return "modified locally (differs from what was installed)"
 	default:

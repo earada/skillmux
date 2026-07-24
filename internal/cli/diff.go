@@ -55,8 +55,14 @@ func runDiff(e *engine.Engine, args []string, stdout, stderr io.Writer) int {
 			failed++
 			continue
 		}
-		if r.Status == domain.StatusUpToDate && !explicit {
+		switch {
+		case r.Status == domain.StatusUpToDate && !explicit:
 			continue // installed == recorded == upstream; nothing to print
+		case r.Status == domain.StatusPinned && !explicit:
+			// A Pin means "stop telling me about this", so it stays out of the
+			// default walk — otherwise a deliberately frozen Skill would keep a CI
+			// gate red forever. Naming it still prints its diff, flagged as pinned.
+			continue
 		}
 
 		sk, ok := catalogSkill(cat, r.SkillName, r.SourceName)
@@ -151,6 +157,9 @@ func writeComparison(w io.Writer, c engine.Comparison) {
 		fmt.Fprintln(w, "! untracked — skillmux did not install this copy; overwriting it needs confirmation")
 	case !c.Pristine:
 		fmt.Fprintln(w, "! modified locally — the changes below mix hand-made edits with upstream's")
+	}
+	if c.Pinned {
+		fmt.Fprintln(w, "! pinned — this row is frozen; the changes below are what you are holding back")
 	}
 	fmt.Fprintf(w, "--- %s\n", safetext.Line(c.InstalledDir))
 	fmt.Fprintf(w, "+++ %s\n", safetext.Line(c.SourceDir))

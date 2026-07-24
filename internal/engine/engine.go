@@ -371,6 +371,15 @@ func (e *Engine) cellStatus(sk AvailableSkill, target, targetPath string) domain
 	if localFP, err := fingerprint.Dir(filepath.Join(targetPath, sk.Name)); err != nil || localFP != in.Fingerprint {
 		return domain.StatusModified
 	}
+	// A Pin freezes this row against upstream drift, so the update signal is
+	// deliberately withheld (skillmux-h6n). It reports Pinned even when the
+	// fingerprints agree, so the Pin stays visible in the matrix while everything
+	// is current — a marker only appearing on drift would hide half the Pins.
+	// Local drift and a re-pointed Target still win above: both are statements
+	// about reality diverging from the Manifest, which a Pin does not make untrue.
+	if e.Config.IsPinned(sk.Name, sk.Source) {
+		return domain.StatusPinned
+	}
 	if in.Fingerprint == sk.Fingerprint {
 		return domain.StatusUpToDate
 	}
@@ -406,7 +415,7 @@ type Preview struct {
 // modification detection.
 func (e *Engine) Preview(desired []reconcile.Cell, cat Catalog) Preview {
 	targets := e.targetPaths()
-	plan := reconcile.Reconcile(desired, availableForReconcile(cat), e.Manifest.Installations, targets)
+	plan := reconcile.Reconcile(desired, e.availableForReconcile(cat), e.Manifest.Installations, targets)
 	return Preview{
 		Plan:       plan,
 		Collisions: apply.Collisions(plan, targets, e.Manifest),
@@ -450,10 +459,18 @@ func (e *Engine) resolved(cat Catalog) map[apply.SkillID]apply.ResolvedSkill {
 	return m
 }
 
-func availableForReconcile(cat Catalog) []reconcile.AvailableSkill {
+func (e *Engine) availableForReconcile(cat Catalog) []reconcile.AvailableSkill {
 	out := make([]reconcile.AvailableSkill, 0, len(cat.Skills))
 	for _, sk := range cat.Skills {
-		out = append(out, reconcile.AvailableSkill{Name: sk.Name, Source: sk.Source, Fingerprint: sk.Fingerprint})
+		out = append(out, reconcile.AvailableSkill{
+			Name:        sk.Name,
+			Source:      sk.Source,
+			Fingerprint: sk.Fingerprint,
+			// Pins live in the Config, but reconcile is a pure function over data:
+			// resolve each row's Pin here so the Plan can skip its drift reinstall
+			// without reaching for the Config itself.
+			Pinned: e.Config.IsPinned(sk.Name, sk.Source),
+		})
 	}
 	return out
 }

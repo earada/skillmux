@@ -4,6 +4,7 @@
 package tui
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -55,7 +56,8 @@ type Model struct {
 	loaded bool
 
 	row, col       int
-	scroll         int // index of the first visible skill row (vertical scroll)
+	scroll         int    // index of the first visible skill row (vertical scroll)
+	matrixMsg      string // transient note above the matrix footer (e.g. pinned)
 	refreshing     bool
 	pendingRefresh bool // a Refresh is wanted but one is already running; run it next
 	pendingConfig  bool // 'c' pressed during a Refresh; open config once it lands
@@ -272,8 +274,7 @@ func (m Model) onRefreshed(cat engine.Catalog) Model {
 	m.installed = map[skillRef]bool{} // present in at least one Target
 	for _, c := range cells {
 		m.status[statusKey{c.SkillName, c.SourceName, c.TargetName}] = c.Status
-		switch c.Status {
-		case domain.StatusUpToDate, domain.StatusUpdateAvailable, domain.StatusUnavailable, domain.StatusModified:
+		if c.Status.Installed() {
 			m.installed[skillRef{c.SkillName, c.SourceName}] = true
 		}
 	}
@@ -335,6 +336,7 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.searching {
 		return m.onSearchKey(msg)
 	}
+	m.matrixMsg = "" // a transient note lives for exactly one keystroke
 	switch msg.String() {
 	case "q":
 		return m, tea.Quit
@@ -376,6 +378,8 @@ func (m Model) onMatrixKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "d":
 		m.markClosure()
+	case "P":
+		m = m.togglePin()
 	case "r":
 		return m.requestRefresh()
 	case "c":
@@ -540,6 +544,37 @@ func (m Model) onResultKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m, cmd := m.requestRefresh()
 		return m, cmd
 	}
+}
+
+// togglePin freezes or thaws the Skill row under the cursor and persists it to
+// the Config as a `[[pin]]` entry (skillmux-h6n). A Pin wider than this one row —
+// Skill-wide or Source-wide, only writable by hand — cannot be lifted per row, so
+// it steers the user to the TOML instead, the same way toggleEdge does for a
+// router-wide Suggestion. The Status is recomputed in place so the row's glyphs
+// change immediately rather than at the next Refresh.
+func (m Model) togglePin() Model {
+	sk, ok := m.curSkill()
+	if !ok {
+		return m
+	}
+	if m.eng.HasWidePin(sk.Name, sk.Source) {
+		m.matrixMsg = "pinned by a wider [[pin]] entry — edit config.toml to change it"
+		return m
+	}
+	now, err := m.eng.TogglePin(sk.Name, sk.Source)
+	if err != nil {
+		m.matrixMsg = "could not save: " + err.Error()
+		return m
+	}
+	for _, c := range m.eng.Status(m.cat) {
+		m.status[statusKey{c.SkillName, c.SourceName, c.TargetName}] = c.Status
+	}
+	state := "unpinned — updates will be reported again"
+	if now {
+		state = "pinned — frozen at the installed version"
+	}
+	m.matrixMsg = fmt.Sprintf("%s (%s) %s", sk.Name, sk.Source, state)
+	return m
 }
 
 // curPlanOp returns the Plan operation under the cursor, if any.

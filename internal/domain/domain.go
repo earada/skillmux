@@ -138,4 +138,22 @@ const (
 	// so Apply requires explicit confirmation before overwriting such a copy.
 	// Local drift, as opposed to StatusUpdateAvailable's upstream drift.
 	StatusModified Status = "modified-locally"
+	// StatusPinned means the Skill is installed and frozen by a Pin: upstream
+	// drift is deliberately not surfaced here and Apply will not reinstall it.
+	// Shown whether or not the Source has moved on, so a Pin stays visible in the
+	// matrix even while everything happens to be current.
+	StatusPinned Status = "pinned"
 )
+
+// Installed reports whether s describes a Skill that is present in its Target —
+// every state except not-installed and conflict. Several callers narrow the full
+// cell Status to "the rows that exist on disk" (the matrix's installed section,
+// the opening desired selection, the headless CLI's rows), so the predicate
+// lives with the states rather than being re-listed at each of them.
+func (s Status) Installed() bool {
+	switch s {
+	case StatusUpToDate, StatusUpdateAvailable, StatusUnavailable, StatusModified, StatusPinned:
+		return true
+	}
+	return false
+}

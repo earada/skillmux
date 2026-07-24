@@ -106,6 +106,39 @@ func (e *Engine) ToggleSuggestion(from, to string) (nowSuggestion bool, err erro
 	return nowSuggestion, nil
 }
 
+// TogglePin freezes or thaws one matrix row — the Skill named skill as supplied
+// by source — and persists the Config as a `[[pin]]` entry. It reports the new
+// state (true == now pinned). A wider entry (Skill-wide or Source-wide) is not
+// narrowed by this: callers should consult HasWidePin and steer the user to the
+// hand-editable TOML instead. On a persist failure the in-memory Config is rolled
+// back and nothing is written.
+func (e *Engine) TogglePin(skill, source string) (nowPinned bool, err error) {
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
+	if e.configPath == "" {
+		return false, errNoConfigPath
+	}
+	old := append([]config.PinEntry(nil), e.Config.Pins...)
+	nowPinned = !e.Config.IsPinned(skill, source)
+	if nowPinned {
+		e.Config.AddPin(skill, source)
+	} else {
+		e.Config.RemovePin(skill, source)
+	}
+	if err := config.Save(e.configPath, e.Config); err != nil {
+		e.Config.Pins = old
+		return false, err
+	}
+	return nowPinned, nil
+}
+
+// IsPinned reports whether the (skill, source) row is frozen by a Pin.
+func (e *Engine) IsPinned(skill, source string) bool { return e.Config.IsPinned(skill, source) }
+
+// HasWidePin reports whether the row is frozen only by a Pin broader than itself,
+// which TogglePin cannot lift.
+func (e *Engine) HasWidePin(skill, source string) bool { return e.Config.HasWidePin(skill, source) }
+
 // mutate applies change, persists, and rolls back via restore on failure.
 func (e *Engine) mutate(change func(), restore func(old config.Config)) error {
 	e.opMu.Lock()

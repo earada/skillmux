@@ -121,8 +121,11 @@ func isDeprecated(s engine.AvailableSkill) bool {
 // skillLabel renders the left-column label for a skill row. The name leads (it
 // is the eye-anchor) in an accent colour — or red when conflicting, dimmed and
 // struck when deprecated; its folder group trails as a dimmed hint, then the
-// Source in parentheses.
-func skillLabel(s engine.AvailableSkill, conflict bool) string {
+// Source in parentheses. A pinned row is prefixed with the pin glyph, so a Pin is
+// visible on the row itself and not only in the cells — a Pin on a Skill that is
+// not installed anywhere has no cell to colour, and pressing 'P' must still show
+// something.
+func skillLabel(s engine.AvailableSkill, conflict, pinned bool) string {
 	// Name, Group and Source are all Source-controlled; make them inert.
 	skillName := sanitize(s.Name)
 	var name string
@@ -133,6 +136,9 @@ func skillLabel(s engine.AvailableSkill, conflict bool) string {
 		name = conflictNameStyle.Render(skillName)
 	default:
 		name = skillNameStyle.Render(skillName)
+	}
+	if pinned {
+		name = pinnedStyle.Render(pinnedGlyph) + " " + name
 	}
 	if s.Group != "" {
 		name += groupStyle.Render("  ") + renderGroup(s.Group)
@@ -294,7 +300,7 @@ func (m Model) viewMatrix() string {
 	rows := make([][]string, len(visible))
 	for vi, s := range visible {
 		row := make([]string, len(m.targets)+1)
-		row[0] = skillLabel(s, nameCount[s.Name] > 1)
+		row[0] = skillLabel(s, nameCount[s.Name] > 1, m.eng.IsPinned(s.Name, s.Source))
 		grid[vi] = make([]cellMeta, len(m.targets))
 		for ci, t := range m.targets {
 			rc := reconcile.Cell{Skill: s.Name, Source: s.Source, Target: t.Name}
@@ -415,12 +421,19 @@ func (m Model) matrixFooter() string {
 		statusStyles[domain.StatusUpToDate].Render("= up-to-date"),
 		statusStyles[domain.StatusUpdateAvailable].Render("↑ update"),
 		statusStyles[domain.StatusModified].Render("≠ modified"),
+		pinnedStyle.Render(pinnedGlyph + " pinned"),
 		dimStyle.Render("· not-installed"),
 		statusStyles[domain.StatusConflict].Render("! conflict"),
 		statusStyles[domain.StatusUnavailable].Render("× unavailable"),
 		dimStyle.Render("✓ selected"),
 		deprecatedStyle.Render(deprecatedGlyph + " deprecated"),
 	}, dimStyle.Render("   "))
+	// A transient note (a Pin toggled, a save that failed) sits above the legend
+	// rather than in the grid: matrixVisibleRows measures the footer, so an extra
+	// line here costs a row instead of overflowing the screen.
+	if m.matrixMsg != "" {
+		b.WriteString(pinnedStyle.Render(sanitize(m.matrixMsg)) + "\n")
+	}
 	// The search line replaces the legend while typing; once a filter is set
 	// but the line is dismissed, show a compact reminder of how to edit/clear.
 	switch {
@@ -440,6 +453,7 @@ func (m Model) matrixFooter() string {
 		keycap{"a", "all"},
 		keycap{"n", "none"},
 		keycap{"d", "+deps"},
+		keycap{"P", "pin"},
 		keycap{"/", "filter"},
 		keycap{"v", "view"},
 		keycap{"r", "refresh"},

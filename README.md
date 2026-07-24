@@ -11,6 +11,8 @@ Skill's upstream **Source** has changed since you last installed it.
   as a dimmed hint after the name.
 - **Deprecated** — a retired Skill, flagged by its `SKILL.md` frontmatter or by a
   `deprecated/` folder in its path; gathered at the bottom of the matrix.
+- **Pin** — a Skill (or a whole Source) frozen at what is installed: no update is
+  reported for it and Apply never reinstalls it.
 
 You edit a desired Skills × Targets selection in the TUI; **Apply** reconciles
 reality to match it (install / uninstall / reinstall) after showing a confirmable
@@ -60,6 +62,11 @@ subpath = "skills"   # optional; narrows where skills are scanned
 [[source]]
 name = "local"
 location = "~/dev/skills"
+
+[[pin]]
+skill = "deploy"     # freeze this skill at what is installed
+source = "my-skills" # optional; omit to freeze it whatever source supplies it
+                     # (a [[pin]] with only `source` freezes that whole source)
 ```
 
 ### GitHub repos
@@ -73,11 +80,11 @@ reads or stores a token. Only `github.com` is in scope. See
 [ADR 0006](./docs/adr/0006-fetch-github-sources-via-git-clone.md).
 
 Run `skillmux` to open the matrix. Keys: arrows move · `space` toggle a cell ·
-`a` all targets for a skill · `n` none · `/` filter skills by name, group or
-source (vim-style, `esc` clears) · `v` view a skill · `r` refresh · `p` preview
-the plan · `c`
-manage targets/sources ·
-`q` quit. From the plan, `y` applies. `v` opens a read-only explorer for the
+`a` all targets for a skill · `n` none · `d` add the dependency closure ·
+`/` filter skills by name, group or source (vim-style, `esc` clears) ·
+`P` pin/unpin the skill row · `v` view a skill · `r` refresh ·
+`p` preview the plan · `c` manage targets/sources · `q` quit.
+From the plan, `y` applies. `v` opens a read-only explorer for the
 skill under the cursor — metadata (including the source's `ref @ commit` for a
 GitHub clone) plus a navigable file tree; `enter` on a file shows its contents
 (markdown rendered, anything else raw), `esc` steps back. The config
@@ -114,6 +121,18 @@ both apply). Reinstalling over a modified copy discards your edits, so the
 Plan warns about it up front and Apply asks for the same explicit confirmation
 as untracked folders before overwriting.
 
+A skill you want to stop moving can be **pinned** with `P`: its cells read
+`◆ pinned`, no update is reported for it, and Apply never reinstalls it. The pin
+is written to `config.toml` as a `[[pin]]` entry, so it survives, is reviewable in
+git, and can be widened by hand — `skill` alone freezes that skill whatever source
+supplies it, `source` alone freezes a whole source. A pin freezes the content you
+already have (that is what the manifest recorded, so nothing extra is stored); a
+*source*-wide revision is what a source's `branch` pins. It holds a version, it
+does not override you: installing, uninstalling, switching source and a re-pointed
+target all still work, and a hand-edited copy still reports `≠ modified`. See
+[ADR 0008](./docs/adr/0008-pins-freeze-installed-content-in-config.md), and use
+the diff (`d`) to see what a pin is holding back.
+
 ## Headless CLI
 
 With a subcommand, skillmux runs non-interactively — for dotfiles,
@@ -136,6 +155,11 @@ optionally a target) also compares an **untracked** folder sitting at that
 target — the one apply would need confirmation to overwrite. Source-controlled
 file content is made inert before printing, so a repo cannot smuggle terminal
 escape sequences into your log.
+
+**Pinned** skills stay out of `check` and out of `diff`'s default walk — a
+deliberately frozen skill must not keep a CI gate red — but `status` lists them as
+`pinned` and `skillmux diff <skill>` still shows (and labels) what the pin is
+holding back.
 
 Headless `apply` keeps the current installations as its desired state, so it
 can only *reinstall* drifted skills — it never installs or uninstalls anything

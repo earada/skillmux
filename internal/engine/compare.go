@@ -31,7 +31,11 @@ type Comparison struct {
 	// recorded at install time. When false the old side carries hand-made edits
 	// too, so the changes below mix local drift with upstream drift.
 	Pristine bool
-	Summary  diff.Summary
+	// Pinned reports whether a Pin freezes this row. The changes are then what the
+	// user is deliberately holding back rather than a pending update, which is
+	// worth saying out loud on a screen whose whole premise is "reinstall?".
+	Pinned  bool
+	Summary diff.Summary
 }
 
 // Compare computes the Comparison for sk against the named Target. It errors
@@ -64,6 +68,7 @@ func (e *Engine) Compare(sk AvailableSkill, targetName string) (Comparison, erro
 		TargetName:   targetName,
 		InstalledDir: installedDir,
 		SourceDir:    sk.Dir,
+		Pinned:       e.Config.IsPinned(sk.Name, sk.Source),
 	}
 	if in, tracked := e.Manifest.Find(targetName, sk.Name); tracked {
 		c.Tracked = true

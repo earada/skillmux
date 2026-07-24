@@ -16,6 +16,7 @@ var (
 	cGreen   = lipgloss.Color("#4ADE80")
 	cAmber   = lipgloss.Color("#FBBF24")
 	cRed     = lipgloss.Color("#F87171")
+	cBlue    = lipgloss.Color("#60A5FA") // a deliberate hold: pinned
 )
 
 var (
@@ -67,6 +68,12 @@ var (
 	diffDelStyle  = lipgloss.NewStyle().Foreground(cRed)
 	diffHunkStyle = lipgloss.NewStyle().Foreground(cBrand)
 
+	// pinnedStyle marks a row frozen by a Pin: calm blue, deliberately neither
+	// green ("current") nor amber ("needs action") — a Pin is a decision already
+	// taken. pinnedGlyph precedes a pinned skill's name and fills its cells.
+	pinnedStyle = lipgloss.NewStyle().Foreground(cBlue)
+	pinnedGlyph = "◆"
+
 	// tableBorderStyle colours the matrix grid lines.
 	tableBorderStyle = lipgloss.NewStyle().Foreground(cBorder)
 	tableHeadStyle   = lipgloss.NewStyle().Bold(true).Foreground(cBrand).Align(lipgloss.Center)
@@ -78,6 +85,7 @@ var (
 		domain.StatusConflict:        lipgloss.NewStyle().Foreground(cRed),
 		domain.StatusUnavailable:     lipgloss.NewStyle().Foreground(cRed),
 		domain.StatusModified:        lipgloss.NewStyle().Foreground(cRed),
+		domain.StatusPinned:          pinnedStyle,
 	}
 	statusGlyph = map[domain.Status]string{
 		domain.StatusNotInstalled:    "·",
@@ -86,5 +94,6 @@ var (
 		domain.StatusConflict:        "!",
 		domain.StatusUnavailable:     "×",
 		domain.StatusModified:        "≠",
+		domain.StatusPinned:          pinnedGlyph,
 	}
 )

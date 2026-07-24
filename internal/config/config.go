@@ -16,11 +16,27 @@ import (
 )
 
 // Config is the on-disk shape of the user's declared Targets and Sources, plus
-// any manual Suggestion reclassifications.
+// any manual Suggestion reclassifications and version Pins.
 type Config struct {
 	Targets     []TargetEntry     `toml:"target"`
 	Sources     []SourceEntry     `toml:"source"`
 	Suggestions []SuggestionEntry `toml:"suggestion,omitempty"`
+	Pins        []PinEntry        `toml:"pin,omitempty"`
+}
+
+// PinEntry freezes Skills against upstream drift: what is installed stays
+// installed, no Update available is reported for it, and Apply never reinstalls
+// it to catch up (see CONTEXT.md "Pin" and ADR 0008). It is a user decision, so
+// it lives in the hand-editable Config rather than the machine-managed Manifest.
+//
+// Either field may be omitted to widen the Pin, mirroring SuggestionEntry's bulk
+// form: Skill alone freezes that Skill whatever Source supplies it, Source alone
+// freezes every Skill from that Source, and both together freeze exactly one
+// matrix row. An entry with neither is rejected — freezing everything by accident
+// is not a thing the format should let you write.
+type PinEntry struct {
+	Skill  string `toml:"skill,omitempty"`
+	Source string `toml:"source,omitempty"`
 }
 
 // SuggestionEntry downgrades an inferred Dependency edge to a Suggestion: the
@@ -149,7 +165,62 @@ func (c *Config) validate() error {
 			return errors.New("suggestion: from is required")
 		}
 	}
+	for _, p := range c.Pins {
+		if p.Skill == "" && p.Source == "" {
+			return errors.New("pin: skill or source is required")
+		}
+	}
 	return nil
+}
+
+// IsPinned reports whether the Skill named skill, as supplied by source, is
+// frozen by a Pin — by an exact pair, or by a wider entry that omits one side.
+func (c *Config) IsPinned(skill, source string) bool {
+	for _, p := range c.Pins {
+		if (p.Skill == "" || p.Skill == skill) && (p.Source == "" || p.Source == source) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasWidePin reports whether the (skill, source) pair is frozen only by an entry
+// broader than itself — Skill-wide or Source-wide. Such a Pin cannot be lifted
+// for one row, so a per-row toggle must steer the user to the TOML instead (the
+// same shape as HasBulkSuggestion).
+func (c *Config) HasWidePin(skill, source string) bool {
+	for _, p := range c.Pins {
+		if p.Skill == skill && p.Source == source {
+			continue // the exact entry; a toggle can drop this one
+		}
+		if (p.Skill == "" || p.Skill == skill) && (p.Source == "" || p.Source == source) {
+			return true
+		}
+	}
+	return false
+}
+
+// AddPin freezes exactly the (skill, source) pair. It is a no-op when the pair is
+// already frozen, including by a wider entry.
+func (c *Config) AddPin(skill, source string) {
+	if c.IsPinned(skill, source) {
+		return
+	}
+	c.Pins = append(c.Pins, PinEntry{Skill: skill, Source: source})
+}
+
+// RemovePin drops the exact (skill, source) entry, thawing that row. It does not
+// narrow a wider entry: a Skill-wide or Source-wide Pin is lifted only by editing
+// it, so callers should check HasWidePin before offering a per-row toggle.
+func (c *Config) RemovePin(skill, source string) {
+	kept := c.Pins[:0]
+	for _, p := range c.Pins {
+		if p.Skill == skill && p.Source == source {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	c.Pins = kept
 }
 
 // IsSuggestion reports whether the edge from→to has been manually reclassified
