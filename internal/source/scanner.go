@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -163,7 +164,12 @@ func parseFrontmatter(path string) (frontmatter, error) {
 	}
 	block := strings.Join(lines[1:end], "\n")
 	if err := yaml.Unmarshal([]byte(block), &fm); err != nil {
-		return fm, fmt.Errorf("invalid frontmatter: %w", err)
+		// Retry once with plain values quoted: upstream skills often write
+		// `description: foo: bar`, which strict YAML rejects but agents accept.
+		fm = frontmatter{}
+		if lenient, ok := quotePlainValues(block); !ok || yaml.Unmarshal([]byte(lenient), &fm) != nil {
+			return fm, fmt.Errorf("invalid frontmatter: %w", err)
+		}
 	}
 	if strings.TrimSpace(fm.Name) == "" {
 		return fm, errors.New("frontmatter missing required 'name'")
@@ -172,6 +178,32 @@ func parseFrontmatter(path string) (frontmatter, error) {
 		return fm, err
 	}
 	return fm, nil
+}
+
+// topLevelKV matches an unindented `key: value` line.
+var topLevelKV = regexp.MustCompile(`^([A-Za-z0-9_-]+):[ \t]+(.+)$`)
+
+// quotePlainValues rewrites top-level `key: value` lines whose plain value
+// contains ": " into single-quoted scalars, so a stray colon in a description
+// does not break the whole block. Values that already start a YAML construct
+// (quote, flow collection, block scalar, anchor, tag, ...) are left alone. It
+// reports false when nothing needed rewriting, so callers keep the strict error.
+func quotePlainValues(block string) (string, bool) {
+	lines := strings.Split(block, "\n")
+	changed := false
+	for i, line := range lines {
+		m := topLevelKV.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		val := strings.TrimRight(m[2], " \t\r")
+		if !strings.Contains(val, ": ") || strings.ContainsAny(val[:1], `'"[{|>&*!%@`+"`") {
+			continue
+		}
+		lines[i] = m[1] + ": '" + strings.ReplaceAll(val, "'", "''") + "'"
+		changed = true
+	}
+	return strings.Join(lines, "\n"), changed
 }
 
 // validateSkillName requires a Skill's name to be a canonical single path

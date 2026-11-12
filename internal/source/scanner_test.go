@@ -346,3 +346,34 @@ func TestScanRootIsItselfASkill(t *testing.T) {
 		t.Fatalf("expected single root skill with relpath '.', got %+v", got)
 	}
 }
+
+// Upstream skills often carry an unquoted ": " inside a plain value, which
+// strict YAML rejects but agents (e.g. Claude Code) accept. Scan must too.
+func TestScanToleratesUnquotedColonInValue(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "factory"), `---
+name: software-factory
+description: Shared language for a software factory: the tasks it runs.
+disable-model-invocation: true
+---
+body`)
+	got, err := Scan(root, "s")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "software-factory" {
+		t.Fatalf("got %+v", got)
+	}
+	want := "Shared language for a software factory: the tasks it runs."
+	if got[0].Description != want {
+		t.Errorf("Description = %q, want %q", got[0].Description, want)
+	}
+}
+
+func TestScanStillRejectsBrokenYAML(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "bad"), "---\nname: [unclosed\n---\n")
+	if _, err := Scan(root, "s"); err == nil {
+		t.Fatal("expected error for genuinely malformed frontmatter")
+	}
+}
