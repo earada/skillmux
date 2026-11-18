@@ -157,6 +157,11 @@ type CellStatus struct {
 	Status     domain.Status
 }
 
+// maxConcurrentFetches bounds how many Sources a Refresh fetches at once: enough
+// to overlap the per-remote handshake latency that dominates a fetch, few enough
+// not to trip a host's SSH connection-rate limits (sshd MaxStartups).
+const maxConcurrentFetches = 8
+
 // Refresh fetches and scans every configured Source, computing the current
 // fingerprint of each discovered Skill. Errors from one Source do not stop the
 // others; they are collected in Catalog.SourceErrors.
@@ -182,8 +187,37 @@ func (e *Engine) Refresh() Catalog {
 		Revisions:    map[string]domain.Revision{},
 		SourceErrors: map[string]error{},
 	}
-	for _, src := range e.Config.DomainSources() {
-		skills, rev, hasRev, err := e.refreshSource(src)
+	// Sources are fetched concurrently: each fetch is dominated by network
+	// latency (an SSH/TLS handshake per remote), so a serial loop paid the full
+	// round trip once per Source (skillmux-b02). Every Source owns a distinct
+	// cache dir, so the fetches never touch the same clone. Results land in a
+	// slice indexed by Source and are merged below in configured order, keeping
+	// the catalog (and the matrix rows) stable across refreshes.
+	sources := e.Config.DomainSources()
+	type result struct {
+		skills []AvailableSkill
+		rev    domain.Revision
+		hasRev bool
+		err    error
+	}
+	results := make([]result, len(sources))
+	sem := make(chan struct{}, maxConcurrentFetches)
+	var wg sync.WaitGroup
+	for i, src := range sources {
+		wg.Add(1)
+		go func(i int, src domain.Source) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			var r result
+			r.skills, r.rev, r.hasRev, r.err = e.refreshSource(src)
+			results[i] = r
+		}(i, src)
+	}
+	wg.Wait()
+
+	for i, src := range sources {
+		skills, rev, hasRev, err := results[i].skills, results[i].rev, results[i].hasRev, results[i].err
 		if err != nil {
 			cat.SourceErrors[src.Name] = err
 			// Retain this Source's last-known-good entries and revision instead
