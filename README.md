@@ -90,7 +90,7 @@ GitHub clone) plus a navigable file tree; `enter` on a file shows its contents
 (markdown rendered, anything else raw), `esc` steps back. The config
 screen (`c`) lists sources then targets (split by a rule), showing each GitHub
 source's current `ref @ commit` and when it was last fetched, and adds (`t`/`s`),
-edits (`e`) and deletes (`d`) them, writing changes back to `config.toml`; you
+edits (`e`) and deletes (`d`, pressed twice to confirm) them, writing changes back to `config.toml`; you
 can still edit the file by hand. Below the targets it lists **found** tools —
 known AI tools detected on the machine (by their root directory, e.g.
 `~/.claude`) that aren't configured yet; `a` adds the one under the cursor as a

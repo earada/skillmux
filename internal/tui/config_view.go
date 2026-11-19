@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -70,6 +71,11 @@ func findSource(ss []config.SourceEntry, name string) (config.SourceEntry, bool)
 
 func (m Model) onConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	entries := m.cfgEntries()
+	// Any key other than d/x cancels a pending delete, then is handled normally.
+	if k := msg.String(); m.cfgDelArmed && k != "d" && k != "x" {
+		m.cfgDelArmed = false
+		m.cfgMsg = ""
+	}
 	switch msg.String() {
 	case "q", "esc":
 		return m.leaveConfig()
@@ -121,14 +127,31 @@ func (m Model) onConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "d", "x":
+		// Two-step: the first press arms a delete of the entry under the cursor,
+		// a second press on that same entry performs it (skillmux-dqc).
 		if m.cfgCursor >= 0 && m.cfgCursor < len(entries) {
 			e := entries[m.cfgCursor]
-			switch e.kind {
-			case entryTarget:
-				_ = m.eng.RemoveTarget(e.name)
+			if e.kind == entryDetected {
+				break
+			}
+			if !m.cfgDelArmed || m.cfgDelEntry != e {
+				m.cfgDelArmed, m.cfgDelEntry = true, e
+				m.cfgMsg = "Delete " + cfgKindName(e.kind) + " " + strconv.Quote(e.name) +
+					"? press " + msg.String() + " again to confirm · any other key cancels"
+				break
+			}
+			m.cfgDelArmed = false
+			var err error
+			if e.kind == entryTarget {
+				err = m.eng.RemoveTarget(e.name)
 				m = m.refreshDetected() // the tool may reappear as detected
-			case entrySource:
-				_ = m.eng.RemoveSource(e.name)
+			} else {
+				err = m.eng.RemoveSource(e.name)
+			}
+			if err != nil {
+				m.cfgMsg = "delete: " + err.Error()
+			} else {
+				m.cfgMsg = "Deleted " + cfgKindName(e.kind) + " " + e.name + "."
 			}
 		}
 	case "C":
@@ -142,6 +165,14 @@ func (m Model) onConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.cfgCursor = clamp(m.cfgCursor, 0, len(m.cfgEntries())-1)
 	return m, nil
+}
+
+// cfgKindName names a configured entry's kind for status messages.
+func cfgKindName(k cfgEntryKind) string {
+	if k == entrySource {
+		return "source"
+	}
+	return "target"
 }
 
 // clearCacheResult turns the outcome of Engine.ClearSourceCache into the status
@@ -163,6 +194,7 @@ func clearCacheResult(cached bool, err error, name string) string {
 func (m Model) enterConfig() Model {
 	m.cfgCursor = 0
 	m.cfgMsg = ""
+	m.cfgDelArmed = false
 	m.mode = modeConfig
 	return m.refreshDetected()
 }
@@ -171,6 +203,7 @@ func (m Model) enterConfig() Model {
 // re-scanning Sources so the matrix reflects the new Config.
 func (m Model) leaveConfig() (tea.Model, tea.Cmd) {
 	m.targets = m.eng.Config.DomainTargets()
+	m.cfgDelArmed = false
 	m.mode = modeMatrix
 	m.clampCursor()
 	// Coalesce: if a Refresh is already in flight (e.g. the startup one), queue

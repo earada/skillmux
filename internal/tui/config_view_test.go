@@ -78,7 +78,8 @@ func TestConfigDeleteEntry(t *testing.T) {
 		Targets: []config.TargetEntry{{Name: "a", Path: "/a"}, {Name: "b", Path: "/b"}},
 	})
 	m, _ = step(t, m, runes("c")) // open config; cursor at 0 (target "a")
-	m, _ = step(t, m, runes("d")) // delete "a"
+	m, _ = step(t, m, runes("d")) // arm delete of "a"
+	m, _ = step(t, m, runes("d")) // confirm
 
 	if len(e.Config.Targets) != 1 || e.Config.Targets[0].Name != "b" {
 		t.Fatalf("delete failed in memory: %+v", e.Config.Targets)
@@ -243,7 +244,8 @@ func TestConfigDeleteTargetRestoresCandidate(t *testing.T) {
 	if len(m.cfgDetected) != 0 {
 		t.Fatalf("configured tool should not be a candidate: %+v", m.cfgDetected)
 	}
-	m, _ = step(t, m, runes("d")) // delete the target
+	m, _ = step(t, m, runes("d")) // arm delete of the target
+	m, _ = step(t, m, runes("d")) // confirm
 	if len(e.Config.Targets) != 0 {
 		t.Fatalf("target not deleted: %+v", e.Config.Targets)
 	}
