@@ -79,7 +79,7 @@ func TestConfigDeleteEntry(t *testing.T) {
 	})
 	m, _ = step(t, m, runes("c")) // open config; cursor at 0 (target "a")
 	m, _ = step(t, m, runes("d")) // arm delete of "a"
-	m, _ = step(t, m, runes("d")) // confirm
+	step(t, m, runes("d"))        // confirm
 
 	if len(e.Config.Targets) != 1 || e.Config.Targets[0].Name != "b" {
 		t.Fatalf("delete failed in memory: %+v", e.Config.Targets)
@@ -284,7 +284,7 @@ func TestConfigAddSourceInfersAndPersists(t *testing.T) {
 	m, _ = step(t, m, runes("remote"))
 	m, _ = step(t, m, key(tea.KeyTab))
 	m, _ = step(t, m, runes("https://github.com/o/r"))
-	m, _ = step(t, m, key(tea.KeyEnter))
+	step(t, m, key(tea.KeyEnter))
 
 	if len(e.Config.Sources) != 1 || e.Config.Sources[0].Name != "remote" {
 		t.Fatalf("source not added: %+v", e.Config.Sources)

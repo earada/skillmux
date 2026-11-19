@@ -22,9 +22,9 @@ func TestLineStripsControlAndEscapeSequences(t *testing.T) {
 		{"del", "a\x7fb", "ab"},
 		{"c1 control utf8", "ab", "ab"},         // C1 CSI as valid UTF-8 (0xC2 0x9B)
 		{"c1 control raw byte", "a\x9bb", "ab"}, // stray 8-bit C1 byte, invalid UTF-8
-		{"bidi rlo", "file‮gnp.exe", "filegnp.exe"},
-		{"bidi pop/isolates", "⁦a⁩‏b", "ab"},
-		{"zero-width divider sentinel", "a​b", "ab"},
+		{"bidi rlo", "file\u202egnp.exe", "filegnp.exe"},
+		{"bidi pop/isolates", "\u2066a\u2069\u200fb", "ab"},
+		{"zero-width divider sentinel", "a\u200bb", "ab"},
 		{"plain unicode kept", "café — αβγ 日本語", "café — αβγ 日本語"},
 		{"empty", "", ""},
 	}

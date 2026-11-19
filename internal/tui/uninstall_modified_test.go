@@ -61,7 +61,7 @@ func TestModifiedUninstallCancelKeepsLocalEdits(t *testing.T) {
 	m, targetPath := envWithModifiedUninstall(t)
 	m, _ = step(t, m, runes("p"))
 	m, _ = step(t, m, runes("y")) // -> confirmation
-	m, cmd := step(t, m, runes("n"))
+	_, cmd := step(t, m, runes("n"))
 	if cmd != nil {
 		t.Error("cancel must not trigger apply")
 	}

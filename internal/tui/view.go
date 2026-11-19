@@ -172,7 +172,7 @@ func renderGroup(group string) string {
 // divider's first cell. lipgloss's table can't draw a border rule between two
 // chosen rows, so after rendering we swap every line carrying this marker for a
 // full-width rule (replaceDividers) — a clean line clear across the grid.
-const dividerMarker = "​"
+const dividerMarker = "\u200b"
 
 // dividerRow is the placeholder row inserted between two sections; its cells are
 // empty (so it never widens a column) save for the invisible marker.
@@ -779,7 +779,7 @@ func (m Model) viewConfig() string {
 	}
 	caps = append(caps,
 		keycap{"e", "edit"},
-		keycap{"d", "delete"},
+		keycap{"d d", "delete"},
 		keycap{"C", "clear cache"},
 		keycap{"↑↓", "move"},
 		keycap{"esc", "back"},
