@@ -191,3 +191,7 @@ internal/apply      execute a Plan against disk (best-effort, safe)
 internal/engine     orchestration: Refresh / Status / Plan / Apply
 internal/tui        Bubble Tea matrix front-end
 ```
+
+## License
+
+[MIT](./LICENSE)
