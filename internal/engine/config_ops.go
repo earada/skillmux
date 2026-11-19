@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/earada/skillmux/internal/config"
+	"github.com/earada/skillmux/internal/domain"
 	"github.com/earada/skillmux/internal/manifest"
 )
 
@@ -116,10 +117,12 @@ func (e *Engine) AddSource(s config.SourceEntry) error {
 		func(old config.Config) { e.Config.Sources = old.Sources })
 }
 
-// RemoveSource drops the named Source and persists the Config.
+// RemoveSource drops the named Source and persists the Config. Once the save
+// succeeds, the Source's cached clone (if any) is deleted, best-effort: a
+// cleanup failure does not fail the removal.
 func (e *Engine) RemoveSource(name string) error {
-	return e.mutate(func() { e.Config.Sources = withoutSource(e.Config.Sources, name) },
-		func(old config.Config) { e.Config.Sources = old.Sources })
+	return e.mutateSources(func(ss []config.SourceEntry) []config.SourceEntry { return withoutSource(ss, name) },
+		name, func(prev domain.Source) { _, _ = e.Fetcher.ClearCache(prev) })
 }
 
 // ClearSourceCache removes the named Source's on-disk cache so the next Refresh
@@ -137,10 +140,50 @@ func (e *Engine) ClearSourceCache(name string) (bool, error) {
 	return false, fmt.Errorf("source %q not found", name)
 }
 
-// UpdateSource replaces the Source named oldName in place and persists.
+// UpdateSource replaces the Source named oldName in place and persists. When
+// the name changes, the cached clone (keyed by name) is moved to the new key
+// once the save succeeds, best-effort, so it is reused rather than orphaned.
+// Location/branch/subpath edits leave the cache alone (Fetch re-syncs origin).
 func (e *Engine) UpdateSource(oldName string, s config.SourceEntry) error {
-	return e.mutate(func() { e.Config.Sources = replaceSource(e.Config.Sources, oldName, s) },
-		func(old config.Config) { e.Config.Sources = old.Sources })
+	return e.mutateSources(func(ss []config.SourceEntry) []config.SourceEntry { return replaceSource(ss, oldName, s) },
+		oldName, func(prev domain.Source) {
+			if s.Name == oldName {
+				return
+			}
+			next := prev
+			next.Name = s.Name
+			_ = e.Fetcher.MoveCache(prev, next)
+		})
+}
+
+// mutateSources is mutate for Source edits, plus a post-save cache step run in
+// the same opMu critical section (so no Refresh is using the clone). afterSave
+// receives the Source named name as it was before the change; it is skipped if
+// the save fails or no such Source existed.
+func (e *Engine) mutateSources(change func([]config.SourceEntry) []config.SourceEntry, name string, afterSave func(prev domain.Source)) error {
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
+	if e.configPath == "" {
+		return errNoConfigPath
+	}
+	var prev domain.Source
+	found := false
+	for _, src := range e.Config.DomainSources() {
+		if src.Name == name {
+			prev, found = src, true
+			break
+		}
+	}
+	old := e.Config.Sources
+	e.Config.Sources = change(append([]config.SourceEntry(nil), old...))
+	if err := config.Save(e.configPath, e.Config); err != nil {
+		e.Config.Sources = old
+		return err
+	}
+	if found {
+		afterSave(prev)
+	}
+	return nil
 }
 
 // ToggleSuggestion flips the classification of the edge from→to and persists the

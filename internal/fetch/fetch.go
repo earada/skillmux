@@ -372,6 +372,34 @@ func (f *Fetcher) ClearCache(src domain.Source) (bool, error) {
 	return true, os.RemoveAll(dir)
 }
 
+// MoveCache relocates a Source's cached clone from old's cache key to next's,
+// so a renamed Source reuses its clone instead of re-cloning. If old has no
+// cache on disk it is a no-op. If next is uncached or already has a cache dir,
+// or the move fails, the old dir is removed instead so it is not orphaned.
+func (f *Fetcher) MoveCache(old, next domain.Source) error {
+	from := f.CacheDirFor(old)
+	if from == "" {
+		return nil
+	}
+	if _, err := os.Stat(from); err != nil {
+		return nil
+	}
+	to := f.CacheDirFor(next)
+	if to == from {
+		return nil
+	}
+	if to != "" {
+		if _, err := os.Lstat(to); os.IsNotExist(err) {
+			if err := os.MkdirAll(filepath.Dir(to), 0o755); err == nil {
+				if err := os.Rename(from, to); err == nil {
+					return nil
+				}
+			}
+		}
+	}
+	return os.RemoveAll(from)
+}
+
 // ownerRepo extracts owner and repo from a GitHub HTTPS or SSH URL. It both
 // validates a Source Location and (in future) builds API URLs; here it is used
 // only to reject Locations that do not name a repository.
