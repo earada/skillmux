@@ -380,10 +380,16 @@ func (e *Engine) UnavailableSkills(cat Catalog) []AvailableSkill {
 		available[skillKey{sk.Name, sk.Source}] = true
 	}
 	seen := map[skillKey]bool{}
+	targets := e.targetPaths()
 	var out []AvailableSkill
 	for _, in := range e.Manifest.Installations {
 		k := skillKey{in.SkillName, in.SourceName}
 		if available[k] || seen[k] {
+			continue
+		}
+		if _, ok := targets[in.TargetName]; !ok {
+			// Its Target is no longer configured: Status emits no cell for it, so
+			// a row here would be an empty ghost (skillmux-fq2).
 			continue
 		}
 		seen[k] = true

@@ -79,3 +79,17 @@ func TestHandRemovedTargetIsInert(t *testing.T) {
 		t.Fatalf("manifest entries must be left untouched, got %+v", e.Manifest.Installations)
 	}
 }
+
+// A Skill installed only in a Target removed from the Config by hand, and since
+// dropped upstream, must not surface as an empty "unavailable" row.
+func TestUnavailableSkillsIgnoresUnconfiguredTarget(t *testing.T) {
+	e, _, _, _ := newEnv(t)
+	cat := e.Refresh()
+	if rep, err := e.Apply(e.Preview(cell(), cat), apply.Options{}); err != nil || !rep.AllOK() {
+		t.Fatalf("install failed: %v %+v", err, rep)
+	}
+	e.Config.Targets = nil
+	if got := e.UnavailableSkills(Catalog{}); len(got) != 0 {
+		t.Fatalf("expected no unavailable rows for an unconfigured Target, got %+v", got)
+	}
+}
