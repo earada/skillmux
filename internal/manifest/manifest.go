@@ -25,7 +25,8 @@ type Manifest struct {
 const currentVersion = 1
 
 // Load reads the Manifest at path. A missing file yields an empty Manifest, not
-// an error (nothing has been installed yet).
+// an error (nothing has been installed yet). A file whose format version is
+// newer than this skillmux understands is an error.
 func Load(path string) (*Manifest, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -37,6 +38,12 @@ func Load(path string) (*Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parsing manifest: %w", err)
+	}
+	// Version 0 (field absent) is a legacy/hand-made file read as current. A
+	// newer format must not be misread, nor rewritten as currentVersion by Save.
+	if m.Version > currentVersion {
+		return nil, fmt.Errorf("manifest %s has format version %d, but this skillmux understands up to %d — upgrade skillmux",
+			path, m.Version, currentVersion)
 	}
 	return &m, nil
 }
