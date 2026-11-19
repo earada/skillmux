@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/earada/skillmux/internal/config"
+	"github.com/earada/skillmux/internal/manifest"
 )
 
 // errNoConfigPath is returned when a mutation is attempted but the Engine was
@@ -31,10 +32,40 @@ func (e *Engine) AddTarget(name, path string) error {
 
 // RemoveTarget drops the named Target and persists the Config. Removing a
 // Target stops Skillmux from managing it; it does not delete already-installed
-// Skills from disk.
+// Skills from disk. Once the Config is persisted, the Target's Installations
+// are dropped from the Manifest (and the Manifest saved) so they are not
+// planned as uninstalls against a Target that no longer exists (skillmux-fq2);
+// the files themselves stay where they are.
 func (e *Engine) RemoveTarget(name string) error {
-	return e.mutate(func() { e.Config.Targets = withoutTarget(e.Config.Targets, name) },
-		func(old config.Config) { e.Config.Targets = old.Targets })
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
+	if e.configPath == "" {
+		return errNoConfigPath
+	}
+	old := e.Config.Targets
+	e.Config.Targets = withoutTarget(old, name)
+	if err := config.Save(e.configPath, e.Config); err != nil {
+		e.Config.Targets = old
+		return err
+	}
+	return e.forgetTargetInstallations(name)
+}
+
+// forgetTargetInstallations drops every Installation recorded for target from
+// the Manifest and persists it. Files on disk are not touched. The caller must
+// hold opMu.
+func (e *Engine) forgetTargetInstallations(target string) error {
+	kept := e.Manifest.Installations[:0:0]
+	for _, in := range e.Manifest.Installations {
+		if in.TargetName != target {
+			kept = append(kept, in)
+		}
+	}
+	if len(kept) == len(e.Manifest.Installations) {
+		return nil
+	}
+	e.Manifest.Installations = kept
+	return manifest.Save(e.manifestPath, e.Manifest)
 }
 
 // UpdateTarget replaces the Target named oldName in place (preserving its

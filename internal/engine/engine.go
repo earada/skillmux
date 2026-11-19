@@ -346,6 +346,10 @@ func (e *Engine) Status(cat Catalog) []CellStatus {
 		if available[skillKey{in.SkillName, in.SourceName}] {
 			continue
 		}
+		if _, ok := targets[in.TargetName]; !ok {
+			// Its Target is no longer configured: not managed, not shown (skillmux-fq2).
+			continue
+		}
 		out = append(out, CellStatus{
 			SkillName:  in.SkillName,
 			SourceName: in.SourceName,
@@ -451,7 +455,7 @@ type Preview struct {
 // modification detection.
 func (e *Engine) Preview(desired []reconcile.Cell, cat Catalog) Preview {
 	targets := e.targetPaths()
-	plan := reconcile.Reconcile(desired, e.availableForReconcile(cat), e.Manifest.Installations, targets)
+	plan := reconcile.Reconcile(desired, e.availableForReconcile(cat), e.managedInstallations(targets), targets)
 	return Preview{
 		Plan:       plan,
 		Collisions: apply.Collisions(plan, targets, e.Manifest),
@@ -472,6 +476,20 @@ func (e *Engine) Apply(pre Preview, opts apply.Options) (apply.Report, error) {
 		return rep, err
 	}
 	return rep, nil
+}
+
+// managedInstallations returns the Manifest's Installations whose Target is
+// configured. An Installation left behind by a Target removed from the Config
+// by hand is not managed, so it must never yield a Plan operation; it stays in
+// the Manifest and is managed again if the Target is re-added (skillmux-fq2).
+func (e *Engine) managedInstallations(targets map[string]string) []domain.Installation {
+	out := make([]domain.Installation, 0, len(e.Manifest.Installations))
+	for _, in := range e.Manifest.Installations {
+		if _, ok := targets[in.TargetName]; ok {
+			out = append(out, in)
+		}
+	}
+	return out
 }
 
 func (e *Engine) targetPaths() map[string]string {
