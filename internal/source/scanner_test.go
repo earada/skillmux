@@ -97,16 +97,16 @@ func TestScanRejectsSkillWithoutName(t *testing.T) {
 	writeSkill(t, filepath.Join(root, "bad"), `---
 description: no name here
 ---`)
-	if _, err := Scan(root, "s"); err == nil {
-		t.Fatal("expected error for SKILL.md without a name")
+	if w := scanSkipsOnly(t, root, "s"); !strings.Contains(w, "missing required 'name'") {
+		t.Fatalf("warning %q should explain the missing name", w)
 	}
 }
 
 func TestScanRejectsMissingFrontmatter(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, filepath.Join(root, "bad"), "# Just a heading, no frontmatter")
-	if _, err := Scan(root, "s"); err == nil {
-		t.Fatal("expected error for SKILL.md without frontmatter")
+	if w := scanSkipsOnly(t, root, "s"); !strings.Contains(w, "missing YAML frontmatter") {
+		t.Fatalf("warning %q should explain the missing frontmatter", w)
 	}
 }
 
@@ -205,8 +205,8 @@ func TestScanRejectsNamesThatEscapeTarget(t *testing.T) {
 		t.Run(label, func(t *testing.T) {
 			root := t.TempDir()
 			writeSkill(t, filepath.Join(root, "skill"), "---\nname: "+strconv.Quote(name)+"\n---\nbody")
-			if _, err := Scan(root, "s"); err == nil {
-				t.Fatalf("expected error for skill name %q, got none", name)
+			if w := scanSkipsOnly(t, root, "s"); !strings.Contains(w, "skill name") {
+				t.Fatalf("warning %q should reject skill name %q", w, name)
 			}
 		})
 	}
@@ -240,14 +240,18 @@ description: second
 ---
 body`)
 
-	_, err := Scan(root, "mysrc")
-	if err == nil {
-		t.Fatal("expected error for duplicate skill names, got none")
+	// The first occurrence is kept; the later one is skipped with a warning.
+	got, warnings, err := ScanWithWarnings(root, "mysrc")
+	if err != nil {
+		t.Fatalf("a duplicate must not fail the scan: %v", err)
 	}
-	msg := err.Error()
+	if len(got) != 1 || got[0].Description != "first" || len(warnings) != 1 {
+		t.Fatalf("expected the first 'dup' kept and one warning, got %+v %q", got, warnings)
+	}
+	msg := warnings[0]
 	for _, want := range []string{"dup", "mysrc", "a", "b"} {
 		if !strings.Contains(msg, want) {
-			t.Errorf("error %q missing %q", msg, want)
+			t.Errorf("warning %q missing %q", msg, want)
 		}
 	}
 }
@@ -267,13 +271,16 @@ description: team b
 ---
 body`)
 
-	_, err := Scan(root, "s")
-	if err == nil {
-		t.Fatal("expected error for duplicate names across groups, got none")
+	got, warnings, err := ScanWithWarnings(root, "s")
+	if err != nil {
+		t.Fatalf("a duplicate must not fail the scan: %v", err)
 	}
-	msg := err.Error()
+	if len(got) != 1 || got[0].Description != "team a" || len(warnings) != 1 {
+		t.Fatalf("expected team-a kept and one warning, got %+v %q", got, warnings)
+	}
+	msg := warnings[0]
 	if !strings.Contains(msg, "team-a/deploy") || !strings.Contains(msg, "team-b/deploy") {
-		t.Errorf("error %q should include both relpaths team-a/deploy and team-b/deploy", msg)
+		t.Errorf("warning %q should include both relpaths team-a/deploy and team-b/deploy", msg)
 	}
 }
 
@@ -290,15 +297,15 @@ name: dup
 ---
 body`)
 
-	_, err := Scan(root, "s")
-	if err == nil {
-		t.Fatal("expected error, got none")
+	_, warnings, err := ScanWithWarnings(root, "s")
+	if err != nil || len(warnings) != 1 {
+		t.Fatalf("expected one duplicate warning, got %q err=%v", warnings, err)
 	}
-	// "alpha" sorts before "zeta" and must be named first in the message.
-	msg := err.Error()
+	// "alpha" sorts before "zeta" (lexical walk) and must be named first.
+	msg := warnings[0]
 	ai, zi := strings.Index(msg, "alpha"), strings.Index(msg, "zeta")
 	if ai == -1 || zi == -1 || ai > zi {
-		t.Errorf("error %q should mention alpha before zeta", msg)
+		t.Errorf("warning %q should mention alpha before zeta", msg)
 	}
 }
 
@@ -326,12 +333,8 @@ func TestScanRejectsSymlinkedSkillFile(t *testing.T) {
 		t.Skipf("symlinks unsupported on this platform: %v", err)
 	}
 
-	_, err := Scan(root, "s")
-	if err == nil {
-		t.Fatal("expected error for symlinked SKILL.md, got none")
-	}
-	if !strings.Contains(err.Error(), "symlink") {
-		t.Errorf("error %q should explain the SKILL.md is a symlink", err)
+	if w := scanSkipsOnly(t, root, "s"); !strings.Contains(w, "symlink") {
+		t.Errorf("warning %q should explain the SKILL.md is a symlink", w)
 	}
 }
 
@@ -373,7 +376,7 @@ body`)
 func TestScanStillRejectsBrokenYAML(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, filepath.Join(root, "bad"), "---\nname: [unclosed\n---\n")
-	if _, err := Scan(root, "s"); err == nil {
-		t.Fatal("expected error for genuinely malformed frontmatter")
+	if w := scanSkipsOnly(t, root, "s"); !strings.Contains(w, "invalid frontmatter") {
+		t.Fatalf("warning %q should flag genuinely malformed frontmatter", w)
 	}
 }

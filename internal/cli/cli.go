@@ -18,6 +18,7 @@ import (
 	"github.com/earada/skillmux/internal/domain"
 	"github.com/earada/skillmux/internal/engine"
 	"github.com/earada/skillmux/internal/reconcile"
+	"github.com/earada/skillmux/internal/safetext"
 )
 
 // Exit codes, git-style so scripts can branch on them: 0 nothing pending / all
@@ -228,8 +229,21 @@ func installedRows(e *engine.Engine, cat engine.Catalog) []engine.CellStatus {
 
 // reportSourceErrors prints each failing Source to stderr (in a stable order)
 // and reports whether there were any: such a Source's rows reflect its last
-// cached snapshot, not upstream.
+// cached snapshot, not upstream. It also prints each Source's scan warnings
+// (Skills skipped as malformed); those never count as a failure, since the
+// Source's other Skills are fresh (skillmux-xol).
 func reportSourceErrors(cat engine.Catalog, stderr io.Writer) bool {
+	warned := make([]string, 0, len(cat.SourceWarnings))
+	for n := range cat.SourceWarnings {
+		warned = append(warned, n)
+	}
+	sort.Strings(warned)
+	for _, n := range warned {
+		for _, w := range cat.SourceWarnings[n] {
+			fmt.Fprintf(stderr, "skillmux: source %s: warning: %s\n", n, safetext.Line(w))
+		}
+	}
+
 	names := make([]string, 0, len(cat.SourceErrors))
 	for n := range cat.SourceErrors {
 		names = append(names, n)

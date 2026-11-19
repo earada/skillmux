@@ -26,10 +26,22 @@ const utf8BOM = "\uFEFF"
 
 // Scan walks root and returns the Skills found in it, attributing each to
 // sourceName. Each Skill's RelPath is its directory relative to root ("." when
-// root itself is a Skill). Scan fails on the first malformed SKILL.md so the
-// user gets a clear pointer to fix it.
+// root itself is a Skill). Scan fails only on a walk/IO error; a malformed
+// Skill is skipped (see ScanWithWarnings for the reasons).
 func Scan(root, sourceName string) ([]domain.Skill, error) {
+	skills, _, err := ScanWithWarnings(root, sourceName)
+	return skills, err
+}
+
+// ScanWithWarnings is Scan that also returns one warning per skipped Skill. A
+// Skill directory whose SKILL.md is a symlink, has malformed frontmatter or an
+// invalid name, or declares a name already seen earlier in the (lexical) walk
+// is skipped and reported rather than failing the whole Source: one broken
+// Skill in a third-party repo must not block every update from it
+// (skillmux-xol). A skipped Skill directory is still not descended into.
+func ScanWithWarnings(root, sourceName string) ([]domain.Skill, []string, error) {
 	var skills []domain.Skill
+	var warnings []string
 	// seenBy maps a Skill name to the RelPath where it was first found, so a
 	// second directory declaring the same name can be rejected. A name is a
 	// Skill's identity within a Source; two directories sharing one would make
@@ -59,7 +71,8 @@ func Scan(root, sourceName string) ([]domain.Skill, error) {
 			// that defines it and a fingerprint that omits it. Reject it at the
 			// source so scan, fingerprint, view, and apply all agree on what a
 			// Skill is. See skillmux-iot.
-			return fmt.Errorf("%s: SKILL.md is a symlink; a Skill's SKILL.md must be a regular file", skillFile)
+			warnings = append(warnings, fmt.Sprintf("%s: SKILL.md is a symlink; a Skill's SKILL.md must be a regular file", skillFile))
+			return fs.SkipDir
 		}
 		if info.IsDir() {
 			return nil // a directory named SKILL.md does not define a Skill; keep descending
@@ -67,20 +80,23 @@ func Scan(root, sourceName string) ([]domain.Skill, error) {
 
 		fm, err := parseFrontmatter(skillFile)
 		if err != nil {
-			return fmt.Errorf("%s: %w", skillFile, err)
+			var pathErr *fs.PathError
+			if errors.As(err, &pathErr) {
+				return fmt.Errorf("%s: %w", skillFile, err) // a real IO failure, not a malformed Skill
+			}
+			warnings = append(warnings, fmt.Sprintf("%s: %v", skillFile, err))
+			return fs.SkipDir
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
 		if firstRel, dup := seenBy[fm.Name]; dup {
-			// Sort the two paths so the message is identical regardless of walk
-			// order, giving stable, testable error reporting.
-			a, b := filepath.ToSlash(firstRel), filepath.ToSlash(rel)
-			if a > b {
-				a, b = b, a
-			}
-			return fmt.Errorf("source %q declares duplicate skill %q at %s and %s", sourceName, fm.Name, a, b)
+			// The walk is lexical, so the first occurrence is deterministic; keep
+			// it and skip this one.
+			warnings = append(warnings, fmt.Sprintf("source %q declares duplicate skill %q at %s and %s; skipping %s",
+				sourceName, fm.Name, filepath.ToSlash(firstRel), filepath.ToSlash(rel), filepath.ToSlash(rel)))
+			return fs.SkipDir
 		}
 		seenBy[fm.Name] = rel
 		skills = append(skills, domain.Skill{
@@ -95,9 +111,9 @@ func Scan(root, sourceName string) ([]domain.Skill, error) {
 		return fs.SkipDir // a Skill is atomic; do not descend into it
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return skills, nil
+	return skills, warnings, nil
 }
 
 type frontmatter struct {

@@ -417,6 +417,19 @@ func (m Model) matrixFooter() string {
 			b.WriteString(errStyle.Render(sanitize(fmt.Sprintf("⚠ source %q: %v", n, m.sourceErrors[n]))) + "\n")
 		}
 	}
+	// Skipped Skills are a softer note than a failed Source: the Source's other
+	// Skills are fresh, so render them amber with the first reason (skillmux-xol).
+	if len(m.cat.SourceWarnings) > 0 {
+		names := make([]string, 0, len(m.cat.SourceWarnings))
+		for n := range m.cat.SourceWarnings {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			ws := m.cat.SourceWarnings[n]
+			b.WriteString(brokenStyle.Render(sanitize(fmt.Sprintf("⚠ source %q: %d skill(s) skipped — %s", n, len(ws), ws[0]))) + "\n")
+		}
+	}
 	legend := strings.Join([]string{
 		statusStyles[domain.StatusUpToDate].Render("= up-to-date"),
 		statusStyles[domain.StatusUpdateAvailable].Render("↑ update"),

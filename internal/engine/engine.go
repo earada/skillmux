@@ -147,6 +147,10 @@ type Catalog struct {
 	Skills       []AvailableSkill
 	Revisions    map[string]domain.Revision // keyed by Source name; GitHub Sources only
 	SourceErrors map[string]error
+	// SourceWarnings holds, per Source, the Skills its scan skipped (malformed
+	// SKILL.md, invalid name, duplicate, ...). A Source with only warnings is
+	// not failed: its good Skills are fresh. Not persisted, like SourceErrors.
+	SourceWarnings map[string][]string
 }
 
 // CellStatus is the Status of one (Skill, Target) cell in the matrix.
@@ -184,8 +188,9 @@ func (e *Engine) Refresh() Catalog {
 	}
 
 	cat := Catalog{
-		Revisions:    map[string]domain.Revision{},
-		SourceErrors: map[string]error{},
+		Revisions:      map[string]domain.Revision{},
+		SourceErrors:   map[string]error{},
+		SourceWarnings: map[string][]string{},
 	}
 	// Sources are fetched concurrently: each fetch is dominated by network
 	// latency (an SSH/TLS handshake per remote), so a serial loop paid the full
@@ -195,10 +200,11 @@ func (e *Engine) Refresh() Catalog {
 	// the catalog (and the matrix rows) stable across refreshes.
 	sources := e.Config.DomainSources()
 	type result struct {
-		skills []AvailableSkill
-		rev    domain.Revision
-		hasRev bool
-		err    error
+		skills   []AvailableSkill
+		rev      domain.Revision
+		hasRev   bool
+		warnings []string
+		err      error
 	}
 	results := make([]result, len(sources))
 	sem := make(chan struct{}, maxConcurrentFetches)
@@ -210,7 +216,7 @@ func (e *Engine) Refresh() Catalog {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			var r result
-			r.skills, r.rev, r.hasRev, r.err = e.refreshSource(src)
+			r.skills, r.rev, r.hasRev, r.warnings, r.err = e.refreshSource(src)
 			results[i] = r
 		}(i, src)
 	}
@@ -233,6 +239,9 @@ func (e *Engine) Refresh() Catalog {
 		if hasRev {
 			cat.Revisions[src.Name] = rev
 		}
+		if ws := results[i].warnings; len(ws) > 0 {
+			cat.SourceWarnings[src.Name] = ws
+		}
 		cat.Skills = append(cat.Skills, skills...)
 	}
 	resolveRefs(cat.Skills)
@@ -243,8 +252,9 @@ func (e *Engine) Refresh() Catalog {
 // refreshSource fetches and scans a single Source, returning its Skills and
 // Revision. It reports an error on any fetch, scan, or fingerprint failure —
 // treating the whole Source as failed rather than emitting a partial skill list,
-// so the caller can substitute the last-known-good entries wholesale.
-func (e *Engine) refreshSource(src domain.Source) (skills []AvailableSkill, rev domain.Revision, hasRev bool, err error) {
+// so the caller can substitute the last-known-good entries wholesale. A Skill
+// the scan skipped is not a failure; it is returned as a warning (skillmux-xol).
+func (e *Engine) refreshSource(src domain.Source) (skills []AvailableSkill, rev domain.Revision, hasRev bool, warnings []string, err error) {
 	e.mu.Lock()
 	viewing := src.Name == e.viewedSource
 	e.mu.Unlock()
@@ -262,21 +272,21 @@ func (e *Engine) refreshSource(src domain.Source) (skills []AvailableSkill, rev 
 		root, err = e.Fetcher.Fetch(src)
 	}
 	if err != nil {
-		return nil, domain.Revision{}, false, err
+		return nil, domain.Revision{}, false, nil, err
 	}
 	if r, ok := e.Fetcher.Revision(src); ok {
 		r.FetchedAt = time.Now()
 		rev, hasRev = r, true
 	}
-	scanned, err := source.Scan(root, src.Name)
+	scanned, warnings, err := source.ScanWithWarnings(root, src.Name)
 	if err != nil {
-		return nil, domain.Revision{}, false, err
+		return nil, domain.Revision{}, false, nil, err
 	}
 	for _, sk := range scanned {
 		dir := filepath.Join(root, sk.RelPath)
 		fp, ferr := fingerprint.Dir(dir)
 		if ferr != nil {
-			return nil, domain.Revision{}, false, ferr
+			return nil, domain.Revision{}, false, nil, ferr
 		}
 		skills = append(skills, AvailableSkill{
 			Name:              sk.Name,
@@ -289,7 +299,7 @@ func (e *Engine) refreshSource(src domain.Source) (skills []AvailableSkill, rev 
 			DeprecationReason: sk.DeprecationReason,
 		})
 	}
-	return skills, rev, hasRev, nil
+	return skills, rev, hasRev, warnings, nil
 }
 
 // resolveRefs fills each Skill's Refs with the names of other catalog Skills it
