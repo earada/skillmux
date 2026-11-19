@@ -31,7 +31,7 @@ func TestLeaveConfigCoalescesWhileRefreshing(t *testing.T) {
 	}
 
 	// The in-flight refresh lands: the coalesced one now runs.
-	upd, cmd = m.Update(refreshDoneMsg{cat: e.Refresh()})
+	upd, cmd = m.Update(refreshCmd(e)())
 	m = upd.(Model)
 	if cmd == nil {
 		t.Fatal("queued refresh should run once the first completes")
@@ -115,7 +115,7 @@ func TestConfigKeyDeferredWhileRefreshing(t *testing.T) {
 	}
 
 	// The Refresh lands: the deferred config-open now runs.
-	upd, _ = m.Update(refreshDoneMsg{cat: e.Refresh()})
+	upd, _ = m.Update(refreshCmd(e)())
 	m = upd.(Model)
 	if m.mode != modeConfig {
 		t.Fatalf("config should open once the Refresh lands, got mode %v", m.mode)
@@ -141,7 +141,7 @@ func TestPlanKeyDeferredWhileRefreshing(t *testing.T) {
 		t.Fatal("'p' during a Refresh should queue the Plan-open, not drop it")
 	}
 
-	upd, _ = m.Update(refreshDoneMsg{cat: e.Refresh()})
+	upd, _ = m.Update(refreshCmd(e)())
 	m = upd.(Model)
 	if m.mode != modePlan {
 		t.Fatalf("Plan should open once the Refresh lands, got mode %v", m.mode)
@@ -165,7 +165,7 @@ func TestLatestDeferredIntentWins(t *testing.T) {
 		t.Fatalf("latest intent should win: pendingConfig=%v pendingPlan=%v", m.pendingConfig, m.pendingPlan)
 	}
 
-	upd, _ = m.Update(refreshDoneMsg{cat: e.Refresh()})
+	upd, _ = m.Update(refreshCmd(e)())
 	m = upd.(Model)
 	if m.mode != modePlan {
 		t.Fatalf("the last-pressed key (p) should decide the view, got %v", m.mode)

@@ -151,14 +151,29 @@ func Run(e *engine.Engine) error {
 	return err
 }
 
-type refreshDoneMsg struct{ cat engine.Catalog }
+// refreshDoneMsg carries a finished Refresh's Catalog together with the cell
+// Statuses computed from it, both produced off the UI loop by refreshCmd.
+type refreshDoneMsg struct {
+	cat   engine.Catalog
+	cells []engine.CellStatus
+}
 type applyDoneMsg struct {
 	rep apply.Report
 	err error
 }
 
+// refreshCmd runs the Refresh and the Status computation in the background
+// command's goroutine: Status fingerprints every installed (Skill, Target) copy,
+// which reads every file of every installed Skill and would stall the UI loop if
+// run inside Update (skillmux-c1e). Reading Config and Manifest here is safe for
+// the same reason Refresh is: while m.refreshing is true busy() holds, so the UI
+// refuses config edits, Plan and Apply (see the 'c' and 'p' handling) and nothing
+// writes Config or Manifest until this message lands.
 func refreshCmd(e *engine.Engine) tea.Cmd {
-	return func() tea.Msg { return refreshDoneMsg{cat: e.Refresh()} }
+	return func() tea.Msg {
+		cat := e.Refresh()
+		return refreshDoneMsg{cat: cat, cells: e.Status(cat)}
+	}
 }
 
 func applyCmd(e *engine.Engine, pre engine.Preview, opts apply.Options) tea.Cmd {
@@ -225,7 +240,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case refreshDoneMsg:
-		m = m.onRefreshed(msg.cat)
+		m = m.onRefreshedCells(msg.cat, msg.cells)
 		if m.pendingRefresh {
 			// A Refresh was requested while this one ran (e.g. a skill view closed
 			// with a deferred checkout). Run it now that the slot is free — the
@@ -273,14 +288,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// onRefreshed installs cat, computing its cell Statuses synchronously. It is for
+// callers with no background command to do that work — the instant startup
+// render from the cached Catalog in New, and tests; a landed Refresh goes
+// through onRefreshedCells with Statuses precomputed off the UI loop.
 func (m Model) onRefreshed(cat engine.Catalog) Model {
+	return m.onRefreshedCells(cat, m.eng.Status(cat))
+}
+
+// onRefreshedCells installs cat and its precomputed cell Statuses.
+func (m Model) onRefreshedCells(cat engine.Catalog, cells []engine.CellStatus) Model {
 	m.refreshing = false
 	m.cat = cat
 	m.sourceErrors = cat.SourceErrors
 	m.graph = m.eng.SkillGraph(cat) // rebuild the dependency graph once per Catalog
 
-	// Compute status first: the row order depends on which skills are installed.
-	cells := m.eng.Status(cat)
+	// Index status first: the row order depends on which skills are installed.
 	m.status = map[statusKey]domain.Status{}
 	m.installed = map[skillRef]bool{} // present in at least one Target
 	for _, c := range cells {
