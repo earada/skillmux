@@ -190,6 +190,17 @@ func (m Model) Init() tea.Cmd {
 // runs at a time and none starts from in-flight state (skillmux-3vj).
 func (m Model) busy() bool { return m.refreshing || m.applying }
 
+// busyNote is the transient message shown when a Config-mutating key (P in the
+// matrix, t in the skill view) is refused because a command is in flight: those
+// Engine calls take opMu, which a running Refresh/Apply holds for its whole
+// duration, so calling them from the UI loop would freeze it (skillmux-ius).
+func (m Model) busyNote() string {
+	if m.refreshing {
+		return "busy — try again once the refresh finishes"
+	}
+	return "busy — try again once the apply finishes"
+}
+
 // requestRefresh starts a Refresh, or — when a command is already in flight —
 // records that one is wanted so refreshDoneMsg/applyDoneMsg runs it once the
 // slot frees. This coalesces a burst of refresh requests (startup refresh +
@@ -553,6 +564,10 @@ func (m Model) onResultKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // router-wide Suggestion. The Status is recomputed in place so the row's glyphs
 // change immediately rather than at the next Refresh.
 func (m Model) togglePin() Model {
+	if m.busy() {
+		m.matrixMsg = m.busyNote()
+		return m
+	}
 	sk, ok := m.curSkill()
 	if !ok {
 		return m

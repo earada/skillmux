@@ -273,6 +273,7 @@ func TestToggleEdgePersistsAndReclassifies(t *testing.T) {
 	a := engine.AvailableSkill{Name: "a", Source: "local", Refs: []string{"b"}}
 	b := engine.AvailableSkill{Name: "b", Source: "local"}
 	m := New(testEngineCfg(t))
+	m.refreshing = false // idle: the startup Refresh has landed (skillmux-ius)
 	m = injectCatalog(m, a, b)
 	m.row = 0
 	m = m.enterSkillView()
@@ -303,6 +304,8 @@ func TestToggleEdgeRefusesBulkSuggestion(t *testing.T) {
 	a := engine.AvailableSkill{Name: "router", Source: "local", Refs: []string{"b"}}
 	b := engine.AvailableSkill{Name: "b", Source: "local"}
 	m := New(testEngineSkills(t, "x"))
+	// idle: the startup Refresh has landed (skillmux-ius)
+	m.refreshing = false
 	m.eng.Config.Suggestions = []config.SuggestionEntry{{From: "router"}} // bulk
 	m = injectCatalog(m, a, b)
 	m.row = 0

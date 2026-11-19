@@ -205,6 +205,10 @@ func (m Model) onSkillTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // edge, so it steers the user to the hand-editable TOML instead. A no-op when
 // the cursor is not on an edge.
 func (m Model) toggleEdge() Model {
+	if m.busy() {
+		m.viewMsg = m.busyNote()
+		return m
+	}
 	e, ok := m.curEdge()
 	if !ok {
 		return m
