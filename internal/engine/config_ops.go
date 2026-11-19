@@ -71,10 +71,43 @@ func (e *Engine) forgetTargetInstallations(target string) error {
 // UpdateTarget replaces the Target named oldName in place (preserving its
 // position) and persists the Config. Editing only the path keeps the same name,
 // which config.Save accepts since the entry is replaced, not duplicated.
+// Renaming the Target also re-keys its Installations in the Manifest (which are
+// keyed by TargetName) and persists it, so the renamed Target keeps its
+// installed Skills instead of orphaning them under the old name.
 func (e *Engine) UpdateTarget(oldName, name, path string) error {
-	return e.mutate(func() {
-		e.Config.Targets = replaceTarget(e.Config.Targets, oldName, config.TargetEntry{Name: name, Path: path})
-	}, func(old config.Config) { e.Config.Targets = old.Targets })
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
+	if e.configPath == "" {
+		return errNoConfigPath
+	}
+	old := e.Config.Targets
+	e.Config.Targets = replaceTarget(old, oldName, config.TargetEntry{Name: name, Path: path})
+	if err := config.Save(e.configPath, e.Config); err != nil {
+		e.Config.Targets = old
+		return err
+	}
+	if oldName == name {
+		return nil
+	}
+	return e.renameInstallations(oldName, name)
+}
+
+// renameInstallations rewrites TargetName from oldName to name on every
+// Installation in the Manifest and persists it. Recorded Paths are left as-is
+// so a simultaneous path edit is still detected as a target move. The caller
+// must hold opMu.
+func (e *Engine) renameInstallations(oldName, name string) error {
+	changed := false
+	for i := range e.Manifest.Installations {
+		if e.Manifest.Installations[i].TargetName == oldName {
+			e.Manifest.Installations[i].TargetName = name
+			changed = true
+		}
+	}
+	if !changed || e.manifestPath == "" {
+		return nil
+	}
+	return manifest.Save(e.manifestPath, e.Manifest)
 }
 
 // AddSource appends a Source and persists the Config.
