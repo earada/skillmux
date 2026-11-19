@@ -13,6 +13,13 @@ import (
 )
 
 func main() {
+	// help / version / unknown commands need no Engine: answer them before
+	// loading config, so they still work when config.toml is broken.
+	if len(os.Args) > 1 {
+		if code, handled := cli.RunStatic(os.Args[1:], os.Stdout, os.Stderr); handled {
+			os.Exit(code)
+		}
+	}
 	e, err := engine.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "skillmux:", err)

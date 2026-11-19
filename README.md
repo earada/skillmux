@@ -145,6 +145,7 @@ skillmux diff                # unified diff of every installation that differs f
 skillmux diff deploy cc      # …just this skill (and target); says "no differences" if identical
 skillmux apply               # reinstall every installation with an update available
 skillmux apply --yes         # …without the confirmation prompt
+skillmux version             # print the version (also --version, -V)
 ```
 
 `diff` is the headless form of the TUI's diff screen, and answers the question

@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -39,11 +40,64 @@ const usageText = `Usage:
                         exit 1 when anything differs
   skillmux apply [-y]   reinstall every installation with an update available
       --yes, -y         skip the confirmation prompt
+  skillmux version      print the skillmux version
   skillmux help         show this help
 
 Exit codes: 0 ok · 1 updates pending / something differs / declined / an
 operation failed · 2 usage error or a source failed to refresh.
 `
+
+// RunStatic handles the arguments that need no Engine — help, version, and
+// unknown commands — so they work even when config.toml or the manifest is
+// broken (skillmux-au0). handled is false for the Engine subcommands (status,
+// check, diff, apply), which the caller must pass to Run after loading one.
+func RunStatic(args []string, stdout, stderr io.Writer) (code int, handled bool) {
+	switch args[0] {
+	case "status", "check", "diff", "apply":
+		return 0, false
+	case "help", "-h", "--help":
+		fmt.Fprint(stdout, usageText)
+		return exitOK, true
+	case "version", "--version", "-V":
+		fmt.Fprintf(stdout, "skillmux %s\n", versionFrom(debug.ReadBuildInfo()))
+		return exitOK, true
+	default:
+		fmt.Fprintf(stderr, "skillmux: unknown command %q\n\n%s", args[0], usageText)
+		return exitError, true
+	}
+}
+
+// versionFrom derives the version from the binary's build info: the module
+// version when built via `go install mod@vX`, else the VCS revision (12 chars,
+// "-dirty" when the tree was modified), else "devel".
+func versionFrom(bi *debug.BuildInfo, ok bool) string {
+	if !ok || bi == nil {
+		return "devel"
+	}
+	if v := bi.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	var rev string
+	var dirty bool
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	if rev == "" {
+		return "devel"
+	}
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	if dirty {
+		rev += "-dirty"
+	}
+	return rev
+}
 
 // Run dispatches one non-interactive subcommand and returns its exit code.
 func Run(e *engine.Engine, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -66,12 +120,9 @@ func Run(e *engine.Engine, args []string, stdin io.Reader, stdout, stderr io.Wri
 			}
 		}
 		return runApply(e, yes, stdin, stdout, stderr)
-	case "help", "-h", "--help":
-		fmt.Fprint(stdout, usageText)
-		return exitOK
 	default:
-		fmt.Fprintf(stderr, "skillmux: unknown command %q\n\n%s", args[0], usageText)
-		return exitError
+		code, _ := RunStatic(args, stdout, stderr)
+		return code
 	}
 }
 
