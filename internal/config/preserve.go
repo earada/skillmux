@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"unicode"
 
 	toml "github.com/pelletier/go-toml/v2"
 )
@@ -37,6 +38,13 @@ type block struct {
 	index int // position among the file's blocks
 }
 
+// candidate is an existing entry block together with the entry it decodes to.
+type candidate struct {
+	b     block
+	entry any
+	used  bool
+}
+
 // marshalPlain is the historical encoding: the whole Config at once.
 func marshalPlain(c *Config) ([]byte, error) { return toml.Marshal(c) }
 
@@ -67,11 +75,6 @@ func splice(existing string, c *Config) (string, bool) {
 	preamble, blocks := splitBlocks(existing)
 
 	// Existing entry blocks by kind, each with the entry it decodes to.
-	type candidate struct {
-		b     block
-		entry any
-		used  bool
-	}
 	byKind := map[string][]*candidate{}
 	var opaque []block
 	for _, b := range blocks {
@@ -108,24 +111,48 @@ func splice(existing string, c *Config) (string, bool) {
 	}
 
 	for _, kind := range []string{kindTarget, kindSource, kindSuggestion, kindPin} {
-		for _, e := range entriesOf(c, kind) {
-			var hit *candidate
+		entries := entriesOf(c, kind)
+		// Pass 1: an entry that is unchanged keeps its block verbatim. Done for
+		// the whole kind first, so an edited entry can never claim a block that
+		// still matches another entry exactly.
+		hits := make([]*candidate, len(entries))
+		for i, e := range entries {
 			for _, cand := range byKind[kind] {
 				if !cand.used && reflect.DeepEqual(cand.entry, e) {
-					hit = cand
+					cand.used, hits[i] = true, cand
 					break
 				}
 			}
-			if hit != nil {
-				hit.used = true
-				emit(hit.b.text, hit.b.index)
+		}
+		// Pass 2: an edited entry is paired with the block it was edited from,
+		// and only its changed keys are rewritten in place — so its comments and
+		// unknown keys survive the edit too (skillmux-rv6).
+		patched := make([]string, len(entries))
+		for i, e := range entries {
+			if hits[i] != nil {
 				continue
 			}
-			fresh, err := marshalEntry(kind, e)
-			if err != nil {
-				return "", false
+			cand := editedFrom(byKind[kind], e, countNil(hits))
+			if cand == nil {
+				continue
 			}
-			emit(string(fresh), freshBlock)
+			if text, ok := patchBlock(cand.b, cand.entry, e); ok {
+				cand.used, hits[i], patched[i] = true, cand, text
+			}
+		}
+		for i, e := range entries {
+			switch {
+			case hits[i] != nil && patched[i] != "":
+				emit(patched[i], hits[i].b.index)
+			case hits[i] != nil:
+				emit(hits[i].b.text, hits[i].b.index)
+			default:
+				fresh, err := marshalEntry(kind, e)
+				if err != nil {
+					return "", false
+				}
+				emit(string(fresh), freshBlock)
+			}
 		}
 	}
 	// Unknown tables go last so they cannot swallow our arrays of tables.
@@ -312,4 +339,162 @@ func configsEqual(a, b *Config) bool {
 		return n
 	}
 	return reflect.DeepEqual(norm(a), norm(b))
+}
+
+func countNil(hits []*candidate) int {
+	n := 0
+	for _, h := range hits {
+		if h == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// editedFrom picks the unused block an edited entry most plausibly came from:
+// the one carrying the same identity (its first key — a Target's or Source's
+// name, a Suggestion's from, a Pin's skill), or, when the identity itself was
+// edited, the only block left over if this is also the only unmatched entry —
+// which is exactly what one edit in the config form produces. Anything more
+// ambiguous returns nil and the entry is marshalled fresh.
+func editedFrom(cands []*candidate, e any, unmatched int) *candidate {
+	var free []*candidate
+	for _, c := range cands {
+		if !c.used {
+			free = append(free, c)
+		}
+	}
+	id := reflect.ValueOf(e).Field(0).String()
+	var same []*candidate
+	for _, c := range free {
+		if reflect.ValueOf(c.entry).Field(0).String() == id {
+			same = append(same, c)
+		}
+	}
+	switch {
+	case len(same) == 1:
+		return same[0]
+	case len(same) == 0 && len(free) == 1 && unmatched == 1:
+		return free[0]
+	}
+	return nil
+}
+
+// keyLineRe matches a single-line `key = "value"` / `key = 'value'` pair with
+// an optional trailing comment. Groups: indent+key+equals, the quoted value,
+// the rest (spacing and comment).
+var keyLineRe = regexp.MustCompile(`^(\s*([A-Za-z0-9_-]+)\s*=\s*)("(?:[^"\\]|\\.)*"|'[^']*')(\s*(?:#.*)?)$`)
+
+// patchBlock rewrites, inside b's text, only the keys whose value differs
+// between the entry the block decodes to (from) and the wanted one (to):
+// a changed value is replaced on its own line (indentation and trailing comment
+// kept), a value that became empty has its line dropped, and a key the block
+// lacks is added after the last key line. It reports false — so the caller
+// marshals the entry fresh — whenever the block is not plainly line-shaped
+// (multi-line strings, a key written some other way) or the result does not
+// decode to exactly `to`.
+func patchBlock(b block, from, to any) (string, bool) {
+	if strings.Contains(b.text, `"""`) || strings.Contains(b.text, "'''") {
+		return "", false
+	}
+	lines := strings.SplitAfter(b.text, "\n")
+	// The entry's own keys sit between its [[kind]] header and the next header.
+	head, end := -1, len(lines)
+	for i, raw := range lines {
+		if headerRe.MatchString(strings.TrimRight(raw, "\r\n")) {
+			if head == -1 {
+				head = i
+			} else {
+				end = i
+				break
+			}
+		}
+	}
+	if head == -1 {
+		return "", false
+	}
+	keyLine := map[string]int{}
+	lastKey := head
+	for i := head + 1; i < end; i++ {
+		if m := keyLineRe.FindStringSubmatch(strings.TrimRight(lines[i], "\r\n")); m != nil {
+			keyLine[m[2]] = i
+			lastKey = i
+		}
+	}
+
+	fv, tv, typ := reflect.ValueOf(from), reflect.ValueOf(to), reflect.TypeOf(to)
+	if fv.Type() != typ {
+		return "", false
+	}
+	var added []string
+	drop := map[int]bool{}
+	for f := 0; f < typ.NumField(); f++ {
+		oldVal, newVal := fv.Field(f).String(), tv.Field(f).String()
+		if oldVal == newVal {
+			continue
+		}
+		key := strings.Split(typ.Field(f).Tag.Get("toml"), ",")[0]
+		i, present := keyLine[key]
+		switch {
+		case newVal == "":
+			if !present {
+				return "", false // the old value came from somewhere we cannot see
+			}
+			drop[i] = true
+		case present:
+			q, ok := quoteValue(newVal)
+			if !ok {
+				return "", false
+			}
+			raw := lines[i]
+			body := strings.TrimRight(raw, "\r\n")
+			m := keyLineRe.FindStringSubmatch(body)
+			lines[i] = m[1] + q + m[4] + raw[len(body):]
+		default:
+			if oldVal != "" {
+				return "", false // set, but not on a line we recognised
+			}
+			q, ok := quoteValue(newVal)
+			if !ok {
+				return "", false
+			}
+			added = append(added, key+" = "+q+"\n")
+		}
+	}
+
+	var out strings.Builder
+	for i, l := range lines {
+		if !drop[i] {
+			out.WriteString(l)
+			if i == lastKey && !strings.HasSuffix(l, "\n") && len(added) > 0 {
+				out.WriteString("\n")
+			}
+		}
+		if i == lastKey {
+			for _, a := range added {
+				out.WriteString(a)
+			}
+		}
+	}
+	text := out.String()
+	got, ok := decodeBlock(block{kind: b.kind, text: text})
+	if !ok || !reflect.DeepEqual(got, to) {
+		return "", false
+	}
+	return text, true
+}
+
+// quoteValue renders v as a single-line TOML string: a literal '…' string when
+// it can be (matching what a fresh marshal writes), else a basic "…" string. It
+// reports false for a value that cannot sit on one line.
+func quoteValue(v string) (string, bool) {
+	for _, r := range v {
+		if unicode.IsControl(r) {
+			return "", false
+		}
+	}
+	if !strings.Contains(v, "'") {
+		return "'" + v + "'", true
+	}
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(v) + `"`, true
 }
