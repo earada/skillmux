@@ -345,12 +345,26 @@ func stageAndSwap(src, targetPath, dest string) error {
 	return nil
 }
 
+// uninstallBase is the directory an Installation's copy lives under: the Path
+// recorded at install time, or the Target's current path for a legacy
+// Installation that recorded none.
+func uninstallBase(op reconcile.Operation, targets map[string]string, man *manifest.Manifest) (string, bool) {
+	if in, ok := man.Find(op.TargetName, op.SkillName); ok && in.Path != "" {
+		return in.Path, true
+	}
+	p, ok := targets[op.TargetName]
+	return p, ok
+}
+
 func uninstall(op reconcile.Operation, targets map[string]string, man *manifest.Manifest) error {
-	targetPath, ok := targets[op.TargetName]
+	// Remove the copy where it was installed, not wherever the Target points
+	// now: after a re-point, a same-named folder at the new path is not ours
+	// (ADR 0002, skillmux-xkw).
+	basePath, ok := uninstallBase(op, targets, man)
 	if !ok {
 		return fmt.Errorf("unknown target %q", op.TargetName)
 	}
-	dest, err := destWithin(targetPath, op.SkillName)
+	dest, err := destWithin(basePath, op.SkillName)
 	if err != nil {
 		return err
 	}
