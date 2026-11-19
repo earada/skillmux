@@ -70,3 +70,22 @@ func setRow(d map[reconcile.Cell]bool, skill, source string, targets []domain.Ta
 		}
 	}
 }
+
+// renameDesired re-keys the desired selection after a Target or Source was
+// renamed in the config form, so the cells the user had marked follow the new
+// name instead of planning an install against the old name and an uninstall of
+// the renamed one. field picks which coordinate of a Cell carries the name.
+func renameDesired(d map[reconcile.Cell]bool, oldName, name string, field func(*reconcile.Cell) *string) {
+	if oldName == name {
+		return
+	}
+	for c, on := range d {
+		if *field(&c) != oldName {
+			continue
+		}
+		old := c
+		*field(&c) = name
+		delete(d, old)
+		d[c] = on
+	}
+}

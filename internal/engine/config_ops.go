@@ -6,6 +6,7 @@ import (
 
 	"github.com/earada/skillmux/internal/config"
 	"github.com/earada/skillmux/internal/domain"
+	"github.com/earada/skillmux/internal/fetch"
 	"github.com/earada/skillmux/internal/manifest"
 )
 
@@ -113,6 +114,9 @@ func (e *Engine) renameInstallations(oldName, name string) error {
 
 // AddSource appends a Source and persists the Config.
 func (e *Engine) AddSource(s config.SourceEntry) error {
+	if err := validateSourceEntry(s); err != nil {
+		return err
+	}
 	return e.mutate(func() { e.Config.Sources = append(e.Config.Sources, s) },
 		func(old config.Config) { e.Config.Sources = old.Sources })
 }
@@ -122,7 +126,7 @@ func (e *Engine) AddSource(s config.SourceEntry) error {
 // cleanup failure does not fail the removal.
 func (e *Engine) RemoveSource(name string) error {
 	return e.mutateSources(func(ss []config.SourceEntry) []config.SourceEntry { return withoutSource(ss, name) },
-		name, func(prev domain.Source) { _, _ = e.Fetcher.ClearCache(prev) })
+		name, func(prev domain.Source) error { _, _ = e.Fetcher.ClearCache(prev); return nil })
 }
 
 // ClearSourceCache removes the named Source's on-disk cache so the next Refresh
@@ -144,23 +148,68 @@ func (e *Engine) ClearSourceCache(name string) (bool, error) {
 // the name changes, the cached clone (keyed by name) is moved to the new key
 // once the save succeeds, best-effort, so it is reused rather than orphaned.
 // Location/branch/subpath edits leave the cache alone (Fetch re-syncs origin).
+//
+// A rename also re-keys everything that names the Source: the `[[pin]]`
+// entries scoped to it (in the same Config save) and its Installations in the
+// Manifest, so the renamed Source keeps its pins and its installed Skills
+// instead of leaving them orphaned under the old name (skillmux-5ba).
 func (e *Engine) UpdateSource(oldName string, s config.SourceEntry) error {
-	return e.mutateSources(func(ss []config.SourceEntry) []config.SourceEntry { return replaceSource(ss, oldName, s) },
-		oldName, func(prev domain.Source) {
-			if s.Name == oldName {
-				return
+	if err := validateSourceEntry(s); err != nil {
+		return err
+	}
+	renamed := s.Name != oldName
+	return e.mutateSources(func(ss []config.SourceEntry) []config.SourceEntry {
+		if renamed {
+			pins := append([]config.PinEntry(nil), e.Config.Pins...)
+			for i := range pins {
+				if pins[i].Source == oldName {
+					pins[i].Source = s.Name
+				}
 			}
-			next := prev
-			next.Name = s.Name
-			_ = e.Fetcher.MoveCache(prev, next)
-		})
+			e.Config.Pins = pins
+		}
+		return replaceSource(ss, oldName, s)
+	}, oldName, func(prev domain.Source) error {
+		if !renamed {
+			return nil
+		}
+		next := prev
+		next.Name = s.Name
+		_ = e.Fetcher.MoveCache(prev, next)
+		return e.renameSourceInstallations(oldName, s.Name)
+	})
+}
+
+// renameSourceInstallations rewrites SourceName from oldName to name on every
+// Installation in the Manifest and persists it. The caller must hold opMu.
+func (e *Engine) renameSourceInstallations(oldName, name string) error {
+	changed := false
+	for i := range e.Manifest.Installations {
+		if e.Manifest.Installations[i].SourceName == oldName {
+			e.Manifest.Installations[i].SourceName = name
+			changed = true
+		}
+	}
+	if !changed || e.manifestPath == "" {
+		return nil
+	}
+	return manifest.Save(e.manifestPath, e.Manifest)
+}
+
+// validateSourceEntry rejects a Source whose branch or location Fetch would
+// refuse, so the config form reports it on entry rather than at the next
+// Refresh (skillmux-7ut). Only the entry being written is checked: a bad Source
+// already sitting in a hand-edited Config must not block unrelated saves.
+func validateSourceEntry(s config.SourceEntry) error {
+	c := config.Config{Sources: []config.SourceEntry{s}}
+	return fetch.ValidateSource(c.DomainSources()[0])
 }
 
 // mutateSources is mutate for Source edits, plus a post-save cache step run in
 // the same opMu critical section (so no Refresh is using the clone). afterSave
 // receives the Source named name as it was before the change; it is skipped if
 // the save fails or no such Source existed.
-func (e *Engine) mutateSources(change func([]config.SourceEntry) []config.SourceEntry, name string, afterSave func(prev domain.Source)) error {
+func (e *Engine) mutateSources(change func([]config.SourceEntry) []config.SourceEntry, name string, afterSave func(prev domain.Source) error) error {
 	e.opMu.Lock()
 	defer e.opMu.Unlock()
 	if e.configPath == "" {
@@ -174,14 +223,14 @@ func (e *Engine) mutateSources(change func([]config.SourceEntry) []config.Source
 			break
 		}
 	}
-	old := e.Config.Sources
+	old, oldPins := e.Config.Sources, e.Config.Pins
 	e.Config.Sources = change(append([]config.SourceEntry(nil), old...))
 	if err := config.Save(e.configPath, e.Config); err != nil {
-		e.Config.Sources = old
+		e.Config.Sources, e.Config.Pins = old, oldPins
 		return err
 	}
 	if found {
-		afterSave(prev)
+		return afterSave(prev)
 	}
 	return nil
 }

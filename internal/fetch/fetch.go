@@ -104,22 +104,11 @@ func (f *Fetcher) fetchLocal(src domain.Source) (string, error) {
 // every subsequent Fetch, leaving a shallow checkout of the requested ref under
 // the cache. The returned directory is that checkout with Subpath applied.
 func (f *Fetcher) fetchGitHub(src domain.Source, skipCheckout bool) (string, error) {
-	// Branch and Location reach git as bare arguments (`git fetch origin <ref>`,
-	// `git remote add origin <url>`), where a leading "-" would be parsed as an
-	// option (e.g. --upload-pack=<cmd>). Reject such values before running git.
-	if err := validateRef(src.Branch); err != nil {
-		return "", fmt.Errorf("source %q: invalid branch %q: %w", src.Name, src.Branch, err)
-	}
-	if strings.HasPrefix(src.Location, "-") {
-		return "", fmt.Errorf("source %q: invalid location %q: must not start with \"-\"", src.Name, src.Location)
+	if err := ValidateSource(src); err != nil {
+		return "", err
 	}
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", fmt.Errorf("source %q: skillmux requires git on PATH to fetch GitHub Sources — install git, or use a local Source", src.Name)
-	}
-	// Validate the Location names a repository (owner/repo), but clone the
-	// original string so an SSH Location is preserved verbatim.
-	if _, _, err := ownerRepo(src.Location); err != nil {
-		return "", fmt.Errorf("source %q: %w", src.Name, err)
 	}
 
 	timeout := f.gitTimeout()
@@ -149,6 +138,31 @@ func (f *Fetcher) fetchGitHub(src domain.Source, skipCheckout bool) (string, err
 		}
 	}
 	return applySubpath(dest, src.Subpath)
+}
+
+// ValidateSource reports whether a GitHub Source's Branch and Location are ones
+// Fetch would hand to git; a local Source always passes. It runs no process, so
+// a form can reject a bad Source on entry instead of at the next Refresh
+// (skillmux-7ut). Fetch applies the very same check before running git.
+func ValidateSource(src domain.Source) error {
+	if src.Kind != domain.SourceGitHub {
+		return nil
+	}
+	// Branch and Location reach git as bare arguments (`git fetch origin <ref>`,
+	// `git remote add origin <url>`), where a leading "-" would be parsed as an
+	// option (e.g. --upload-pack=<cmd>). Reject such values before running git.
+	if err := validateRef(src.Branch); err != nil {
+		return fmt.Errorf("source %q: invalid branch %q: %w", src.Name, src.Branch, err)
+	}
+	if strings.HasPrefix(src.Location, "-") {
+		return fmt.Errorf("source %q: invalid location %q: must not start with \"-\"", src.Name, src.Location)
+	}
+	// Validate the Location names a repository (owner/repo); the original
+	// string is what gets cloned, so an SSH Location is preserved verbatim.
+	if _, _, err := ownerRepo(src.Location); err != nil {
+		return fmt.Errorf("source %q: %w", src.Name, err)
+	}
+	return nil
 }
 
 // syncOrigin makes the clone's origin remote point at repoURL, updating it when

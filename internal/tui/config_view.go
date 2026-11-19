@@ -9,6 +9,7 @@ import (
 
 	"github.com/earada/skillmux/internal/config"
 	"github.com/earada/skillmux/internal/detect"
+	"github.com/earada/skillmux/internal/reconcile"
 )
 
 // cfgEntryKind distinguishes Target rows from Source rows in the config list.
@@ -246,13 +247,21 @@ func (m *Model) submitForm() error {
 	switch m.form.kind {
 	case formTarget:
 		if m.form.editing {
-			return m.eng.UpdateTarget(m.form.origName, v[0], v[1])
+			if err := m.eng.UpdateTarget(m.form.origName, v[0], v[1]); err != nil {
+				return err
+			}
+			renameDesired(m.desired, m.form.origName, v[0], func(c *reconcile.Cell) *string { return &c.Target })
+			return nil
 		}
 		return m.eng.AddTarget(v[0], v[1])
 	default:
 		s := config.SourceEntry{Name: v[0], Location: v[1], Branch: v[2], Subpath: v[3]}
 		if m.form.editing {
-			return m.eng.UpdateSource(m.form.origName, s)
+			if err := m.eng.UpdateSource(m.form.origName, s); err != nil {
+				return err
+			}
+			renameDesired(m.desired, m.form.origName, s.Name, func(c *reconcile.Cell) *string { return &c.Source })
+			return nil
 		}
 		return m.eng.AddSource(s)
 	}
