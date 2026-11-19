@@ -633,7 +633,7 @@ func renderCollisionSection(cols []apply.Collision) string {
 func renderModifiedSection(cols []apply.Collision) string {
 	var b strings.Builder
 	b.WriteString(errStyle.Render("≠ modified locally") +
-		dimStyle.Render("  — reinstalling these discards hand-made edits; confirmation required") + "\n")
+		dimStyle.Render("  — reinstalling or uninstalling these discards hand-made edits; confirmation required") + "\n")
 	for _, c := range cols {
 		b.WriteString("  " + errStyle.Render(sanitize(c.SkillName)) +
 			dimStyle.Render(" ("+sanitize(c.SourceName)+") → "+sanitize(c.TargetName)+"  "+sanitize(c.Dir)) + "\n")
@@ -660,7 +660,7 @@ func describeOpWith(op reconcile.Operation, reason lipgloss.Style) string {
 
 func (m Model) viewOverwrite() string {
 	var b strings.Builder
-	b.WriteString(headingStyle.Render("Overwrite these folders?") + "\n\n")
+	b.WriteString(headingStyle.Render("Overwrite or remove these folders?") + "\n\n")
 	if len(m.preview.Collisions) > 0 {
 		b.WriteString(dimStyle.Render("These folders already exist but were not installed by skillmux:") + "\n\n")
 		for _, c := range m.preview.Collisions {
@@ -671,13 +671,13 @@ func (m Model) viewOverwrite() string {
 		if len(m.preview.Collisions) > 0 {
 			b.WriteString("\n")
 		}
-		b.WriteString(dimStyle.Render("These installed skills were modified by hand; reinstalling DISCARDS those edits:") + "\n\n")
+		b.WriteString(dimStyle.Render("These installed skills were modified by hand; reinstalling or uninstalling DISCARDS those edits:") + "\n\n")
 		for _, c := range m.preview.Modified {
 			b.WriteString(overwriteRow(c))
 		}
 	}
 	return m.frame(m.headerBar("overwrite"), m.panel(strings.TrimRight(b.String(), "\n")),
-		footerKeys(keycap{"y", "overwrite"}, keycap{"n", "cancel"}))
+		footerKeys(keycap{"y", "confirm"}, keycap{"n", "cancel"}))
 }
 
 func overwriteRow(c apply.Collision) string {

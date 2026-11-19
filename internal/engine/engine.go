@@ -434,7 +434,9 @@ type Preview struct {
 	Collisions []apply.Collision
 	// Modified are the tracked installations the Plan would overwrite whose
 	// content was edited by hand since install — overwriting discards those
-	// local changes, so the user must confirm first (skillmux-0o2).
+	// local changes, so the user must confirm first (skillmux-0o2). Uninstalls
+	// of such copies are listed too, since deleting discards them as well
+	// (skillmux-9nn).
 	Modified []apply.Collision
 
 	resolved map[apply.SkillID]apply.ResolvedSkill

@@ -191,8 +191,14 @@ func TestUninstallRemovesFolderAndEntry(t *testing.T) {
 	targetPath := t.TempDir()
 	os.MkdirAll(filepath.Join(targetPath, "deploy"), 0o755)
 	os.WriteFile(filepath.Join(targetPath, "deploy", "SKILL.md"), []byte("v1"), 0o644)
+	// Record the copy's real fingerprint: a pristine copy uninstalls without
+	// confirmation; a hand-edited one would not (skillmux-9nn).
+	fp, err := fingerprint.Dir(filepath.Join(targetPath, "deploy"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	man := &manifest.Manifest{}
-	man.Put(installation("deploy", "t", "s", "fp"))
+	man.Put(installation("deploy", "t", "s", fp))
 
 	rep := Apply(
 		reconcile.Plan{Operations: []reconcile.Operation{

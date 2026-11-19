@@ -44,7 +44,8 @@ type Options struct {
 	// ConfirmModified is consulted when a Reinstall would write over a tracked
 	// installation whose content no longer matches the Fingerprint recorded at
 	// install time — the user edited it by hand, and overwriting discards those
-	// edits (skillmux-0o2). Returning false — the default behaviour when nil —
+	// edits (skillmux-0o2). An Uninstall of such a copy is gated the same way
+	// (skillmux-9nn). Returning false — the default behaviour when nil —
 	// refuses the write, preserving the local changes.
 	ConfirmModified func(targetName, skillName, destDir string) bool
 	// now overrides the install timestamp; defaults to time.Now.
@@ -150,13 +151,20 @@ func ModifiedOverwrites(plan reconcile.Plan, targets map[string]string, man *man
 // content fingerprint differs from the one recorded at install time. A missing
 // folder is not modified — there are no local edits to lose, so restoring it
 // needs no confirmation. Untracked folders are collides' concern, not ours.
+// An Uninstall discards local edits just as surely as a Reinstall does, so it
+// is covered too, looking where the Installation's copy actually lives
+// (skillmux-9nn).
 func modifiedOverwrite(op reconcile.Operation, targets map[string]string, man *manifest.Manifest) (Collision, bool) {
+	var targetPath string
+	var ok bool
 	switch op.Kind {
 	case reconcile.Install, reconcile.Reinstall:
+		targetPath, ok = targets[op.TargetName]
+	case reconcile.Uninstall:
+		targetPath, ok = uninstallBase(op, targets, man)
 	default:
 		return Collision{}, false
 	}
-	targetPath, ok := targets[op.TargetName]
 	if !ok {
 		return Collision{}, false
 	}
@@ -206,7 +214,7 @@ func applyOne(op reconcile.Operation, targets map[string]string, resolved map[Sk
 	case reconcile.Install, reconcile.Reinstall:
 		return install(op, targets, resolved, man, opts, now)
 	case reconcile.Uninstall:
-		return uninstall(op, targets, man)
+		return uninstall(op, targets, man, opts)
 	case reconcile.Conflict:
 		return fmt.Errorf("unresolved conflict for skill %q in target %q", op.SkillName, op.TargetName)
 	default:
@@ -356,7 +364,15 @@ func uninstallBase(op reconcile.Operation, targets map[string]string, man *manif
 	return p, ok
 }
 
-func uninstall(op reconcile.Operation, targets map[string]string, man *manifest.Manifest) error {
+func uninstall(op reconcile.Operation, targets map[string]string, man *manifest.Manifest, opts Options) error {
+	if c, modified := modifiedOverwrite(op, targets, man); modified {
+		// Deleting a hand-edited copy discards the user's local changes, so it
+		// needs the same confirmation as overwriting one (skillmux-9nn). Same
+		// predicate ModifiedOverwrites previews.
+		if opts.ConfirmModified == nil || !opts.ConfirmModified(op.TargetName, op.SkillName, c.Dir) {
+			return fmt.Errorf("refusing to uninstall locally modified skill %s (confirm to discard local changes)", c.Dir)
+		}
+	}
 	// Remove the copy where it was installed, not wherever the Target points
 	// now: after a re-point, a same-named folder at the new path is not ours
 	// (ADR 0002, skillmux-xkw).

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/earada/skillmux/internal/domain"
+	"github.com/earada/skillmux/internal/fingerprint"
 	"github.com/earada/skillmux/internal/manifest"
 	"github.com/earada/skillmux/internal/reconcile"
 )
@@ -18,6 +19,17 @@ func writeSkill(t *testing.T, base, skill, content string) {
 	if err := os.WriteFile(filepath.Join(base, skill, "SKILL.md"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// pristineFP is the real fingerprint of an installed copy, so the uninstall is
+// not held back as "modified locally" (skillmux-9nn).
+func pristineFP(t *testing.T, base, skill string) string {
+	t.Helper()
+	fp, err := fingerprint.Dir(filepath.Join(base, skill))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fp
 }
 
 func uninstallPlan(skill, target string) reconcile.Plan {
@@ -36,7 +48,7 @@ func TestUninstallAfterTargetRepointRemovesRecordedPathOnly(t *testing.T) {
 	writeSkill(t, newPath, "deploy", "hand-placed")
 
 	man := &manifest.Manifest{}
-	man.Put(domain.Installation{SkillName: "deploy", TargetName: "t", SourceName: "s", Path: oldPath, Fingerprint: "fp"})
+	man.Put(domain.Installation{SkillName: "deploy", TargetName: "t", SourceName: "s", Path: oldPath, Fingerprint: pristineFP(t, oldPath, "deploy")})
 
 	rep := Apply(uninstallPlan("deploy", "t"), map[string]string{"t": newPath}, nil, man, Options{})
 
@@ -62,7 +74,7 @@ func TestUninstallWithRecordedPathDoesNotNeedConfiguredTarget(t *testing.T) {
 	writeSkill(t, oldPath, "deploy", "installed")
 
 	man := &manifest.Manifest{}
-	man.Put(domain.Installation{SkillName: "deploy", TargetName: "gone", SourceName: "s", Path: oldPath, Fingerprint: "fp"})
+	man.Put(domain.Installation{SkillName: "deploy", TargetName: "gone", SourceName: "s", Path: oldPath, Fingerprint: pristineFP(t, oldPath, "deploy")})
 
 	rep := Apply(uninstallPlan("deploy", "gone"), map[string]string{}, nil, man, Options{})
 
@@ -84,7 +96,7 @@ func TestUninstallLegacyEmptyPathFallsBackToTargetPath(t *testing.T) {
 	writeSkill(t, targetPath, "deploy", "installed")
 
 	man := &manifest.Manifest{}
-	man.Put(domain.Installation{SkillName: "deploy", TargetName: "t", SourceName: "s", Fingerprint: "fp"})
+	man.Put(domain.Installation{SkillName: "deploy", TargetName: "t", SourceName: "s", Fingerprint: pristineFP(t, targetPath, "deploy")})
 
 	rep := Apply(uninstallPlan("deploy", "t"), map[string]string{"t": targetPath}, nil, man, Options{})
 
