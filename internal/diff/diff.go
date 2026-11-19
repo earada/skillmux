@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"sort"
 	"unicode/utf8"
+
+	"github.com/earada/skillmux/internal/domain"
 )
 
 // maxFileSize caps how large a file may be before its content diff is skipped
@@ -200,6 +202,12 @@ func listFiles(dir string) (map[string]int64, error) {
 	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if path != dir && domain.IsVCSMetadata(d.Name()) {
+			if d.IsDir() {
+				return fs.SkipDir // VCS metadata is not Skill content (skillmux-ia0)
+			}
+			return nil
 		}
 		if d.IsDir() || !d.Type().IsRegular() {
 			return nil

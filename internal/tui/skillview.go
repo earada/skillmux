@@ -57,6 +57,9 @@ func buildTree(dir string) ([]treeLine, bool) {
 			return ents[i].Name() < ents[j].Name()
 		})
 		for _, e := range ents {
+			if domain.IsVCSMetadata(e.Name()) {
+				continue // VCS metadata is not Skill content (skillmux-ia0)
+			}
 			childRel := e.Name()
 			if rel != "" {
 				childRel = rel + "/" + e.Name()

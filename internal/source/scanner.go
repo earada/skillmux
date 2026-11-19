@@ -43,6 +43,9 @@ func Scan(root, sourceName string) ([]domain.Skill, error) {
 		if !d.IsDir() {
 			return nil
 		}
+		if path != root && domain.IsVCSMetadata(d.Name()) {
+			return fs.SkipDir // VCS metadata is not Skill content (skillmux-ia0)
+		}
 		skillFile := filepath.Join(path, skillFileName)
 		info, statErr := os.Lstat(skillFile)
 		if statErr != nil {

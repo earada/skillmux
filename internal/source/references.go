@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"sort"
 	"unicode/utf8"
+
+	"github.com/earada/skillmux/internal/domain"
 )
 
 // maxRefFileSize caps how much of a file we read when hunting for references. A
@@ -45,6 +47,12 @@ func References(dir string, known map[string]bool) ([]string, error) {
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if path != dir && domain.IsVCSMetadata(d.Name()) {
+			if d.IsDir() {
+				return fs.SkipDir // VCS metadata is not Skill content (skillmux-ia0)
+			}
+			return nil
 		}
 		if d.IsDir() {
 			return nil

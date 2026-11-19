@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/earada/skillmux/internal/domain"
 )
 
 // Dir returns a deterministic SHA-256 fingerprint over the contents of dir. The
@@ -34,6 +36,12 @@ func Dir(dir string) (string, error) {
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if path != dir && domain.IsVCSMetadata(d.Name()) {
+			if d.IsDir() {
+				return fs.SkipDir // VCS metadata is not Skill content (skillmux-ia0)
+			}
+			return nil
 		}
 		if d.IsDir() || !d.Type().IsRegular() {
 			return nil // directories are implied by paths; skip symlinks/specials

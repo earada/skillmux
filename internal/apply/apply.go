@@ -422,6 +422,12 @@ func copyDir(src, dst string) error {
 		if err != nil {
 			return err
 		}
+		if path != src && domain.IsVCSMetadata(d.Name()) {
+			if d.IsDir() {
+				return fs.SkipDir // VCS metadata is not Skill content (skillmux-ia0)
+			}
+			return nil
+		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
