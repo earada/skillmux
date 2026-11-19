@@ -98,7 +98,10 @@ func Save(path string, c *Config) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating config dir: %w", err)
 	}
-	data, err := toml.Marshal(c)
+	// Keep the hand-edited file's comments, layout and unknown keys for every
+	// entry that did not change; a missing or unreadable file is a plain marshal.
+	existing, _ := os.ReadFile(path)
+	data, err := preserveMarshal(existing, c)
 	if err != nil {
 		return fmt.Errorf("encoding config: %w", err)
 	}
