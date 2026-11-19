@@ -295,6 +295,11 @@ var (
 // prior installation is restored. The invariant: dest is only ever mutated by
 // a rename of a fully-materialised copy, never by a partial write.
 func stageAndSwap(src, targetPath, dest string) error {
+	// A freshly adopted tool's skills folder may not exist yet; create it so
+	// the staging folder has somewhere to live.
+	if err := os.MkdirAll(targetPath, 0o755); err != nil {
+		return fmt.Errorf("creating target dir: %w", err)
+	}
 	staging, err := os.MkdirTemp(targetPath, ".skillmux-stage-*")
 	if err != nil {
 		return fmt.Errorf("creating staging dir: %w", err)
