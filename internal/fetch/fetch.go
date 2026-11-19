@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/earada/skillmux/internal/domain"
 	"github.com/earada/skillmux/internal/paths"
@@ -103,6 +104,15 @@ func (f *Fetcher) fetchLocal(src domain.Source) (string, error) {
 // every subsequent Fetch, leaving a shallow checkout of the requested ref under
 // the cache. The returned directory is that checkout with Subpath applied.
 func (f *Fetcher) fetchGitHub(src domain.Source, skipCheckout bool) (string, error) {
+	// Branch and Location reach git as bare arguments (`git fetch origin <ref>`,
+	// `git remote add origin <url>`), where a leading "-" would be parsed as an
+	// option (e.g. --upload-pack=<cmd>). Reject such values before running git.
+	if err := validateRef(src.Branch); err != nil {
+		return "", fmt.Errorf("source %q: invalid branch %q: %w", src.Name, src.Branch, err)
+	}
+	if strings.HasPrefix(src.Location, "-") {
+		return "", fmt.Errorf("source %q: invalid location %q: must not start with \"-\"", src.Name, src.Location)
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", fmt.Errorf("source %q: skillmux requires git on PATH to fetch GitHub Sources — install git, or use a local Source", src.Name)
 	}
@@ -188,6 +198,21 @@ func freshClone(timeout time.Duration, repoURL, dest, ref string) error {
 	args = append(args, "--", repoURL, dest)
 	_, err := runGit(timeout, "", args...)
 	return err
+}
+
+// validateRef rejects a Branch value git could misread: one starting with "-"
+// (parsed as an option rather than a ref) or containing whitespace or control
+// characters (never valid in a ref name). An empty ref (default branch) is fine.
+func validateRef(ref string) error {
+	if strings.HasPrefix(ref, "-") {
+		return fmt.Errorf("must not start with \"-\"")
+	}
+	for _, r := range ref {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("must not contain whitespace or control characters")
+		}
+	}
+	return nil
 }
 
 // looksLikeCommitSHA reports whether ref is a lowercase hex commit id (7–40
