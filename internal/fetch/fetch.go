@@ -427,28 +427,89 @@ func (f *Fetcher) MoveCache(old, next domain.Source) error {
 
 // ownerRepo extracts owner and repo from a GitHub HTTPS or SSH URL. It both
 // validates a Source Location and (in future) builds API URLs; here it is used
-// only to reject Locations that do not name a repository.
+// to reject, before any git process runs, Locations that do not name a
+// github.com repository. Only github.com is in scope (ADR 0006), so a remote
+// Location must be exactly one of (host compared case-insensitively):
+//
+//	https://github.com/<owner>/<repo>[.git]
+//	ssh://git@github.com/<owner>/<repo>[.git]
+//	git@github.com:<owner>/<repo>[.git]
+//
+// Plaintext http://, git://, any other scheme, any other host or port, and any
+// other scp-style "host:path" / "transport::address" form git would treat as
+// remote are rejected — fetched content is copied into the user's agent skill
+// folders, so it must come from github.com over an authenticated transport.
+//
+// Test/mirror seam: a Location that is a filesystem path (no scheme, not
+// scp-style) or a file:// URL is still accepted with only the owner/repo shape
+// check, so tests (and local mirrors) can point a Source of Kind github at a
+// local repository. Such a Location is never inferred as Kind github by
+// config; it takes an explicit kind = "github".
 func ownerRepo(repoURL string) (string, string, error) {
-	var path string
-	if strings.HasPrefix(repoURL, "git@") {
-		// git@github.com:owner/repo(.git)
-		_, after, ok := strings.Cut(repoURL, ":")
-		if !ok {
-			return "", "", fmt.Errorf("invalid ssh URL %q", repoURL)
-		}
-		path = after
-	} else {
-		u, err := url.Parse(repoURL)
-		if err != nil {
-			return "", "", fmt.Errorf("invalid URL %q: %w", repoURL, err)
-		}
-		path = u.Path
+	path, err := githubLocationPath(repoURL)
+	if err != nil {
+		return "", "", err
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", fmt.Errorf("URL %q does not contain owner/repo", repoURL)
 	}
 	return parts[0], strings.TrimSuffix(parts[1], ".git"), nil
+}
+
+// githubLocationPath checks that loc is an in-scope GitHub Location (see
+// ownerRepo) and returns the part holding owner/repo: the URL path, the path
+// after "git@github.com:", or — for the filesystem-path / file:// seam — the
+// local path itself.
+func githubLocationPath(loc string) (string, error) {
+	unsupported := func(hint string) error {
+		msg := fmt.Sprintf("unsupported Location %q: only github.com over https or ssh is supported (https://github.com/owner/repo or git@github.com:owner/repo)", loc)
+		if hint != "" {
+			msg += "; " + hint
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	if rest, ok := strings.CutPrefix(loc, "git@"); ok {
+		// scp-style: git@github.com:owner/repo(.git)
+		host, path, ok := strings.Cut(rest, ":")
+		if !ok || !strings.EqualFold(host, "github.com") {
+			return "", unsupported("")
+		}
+		return path, nil
+	}
+	if strings.Contains(loc, "://") {
+		u, err := url.Parse(loc)
+		if err != nil {
+			return "", fmt.Errorf("invalid URL %q: %w", loc, err)
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "file":
+			return u.Path, nil // test/mirror seam
+		case "https":
+			if !strings.EqualFold(u.Host, "github.com") {
+				return "", unsupported("")
+			}
+		case "ssh":
+			if u.User == nil || u.User.String() != "git" || !strings.EqualFold(u.Host, "github.com") {
+				return "", unsupported("")
+			}
+		case "http":
+			return "", unsupported("plaintext http is not allowed, use https:// instead")
+		default:
+			return "", unsupported("")
+		}
+		if u.RawQuery != "" || u.Fragment != "" {
+			return "", unsupported("")
+		}
+		return u.Path, nil
+	}
+	// A colon before any slash is an scp-style "host:path" or a
+	// "transport::address" Location, which git treats as remote — reject it.
+	// Anything else is a filesystem path (the test/mirror seam).
+	if i := strings.IndexByte(loc, ':'); i >= 0 && !strings.Contains(loc[:i], "/") && filepath.VolumeName(loc) == "" {
+		return "", unsupported("")
+	}
+	return loc, nil
 }
 
 // applySubpath joins an optional, traversal-free subpath onto base.
